@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "nodes": [
+    {"id": "input", "type": "data", "subtype": "input", "name": "Input", "position": {"x": 0, "y": 0}, "config": {"schema": {"type": "object"}}, "input_mapping": {}, "metadata": {}},
+    {"id": "edge-agent", "type": "agent", "subtype": "agent", "name": "Edge Agent", "position": {"x": 220, "y": 0}, "config": {"agent_id": "<EDGE_AGENT_ID>"}, "input_mapping": {}, "metadata": {}},
+    {"id": "condition", "type": "logic", "subtype": "condition", "name": "Hard Sample?", "position": {"x": 440, "y": 0}, "config": {"expression": {"left": "{{nodes.edge-agent.output.hard_sample_count}}", "operator": ">", "right": 0}}, "input_mapping": {}, "metadata": {}},
+    {"id": "approval", "type": "human", "subtype": "approval", "name": "Approve Training", "position": {"x": 660, "y": 0}, "config": {"title": "Approve training?", "allow_reject": true}, "input_mapping": {}, "metadata": {}},
+    {"id": "import-dataset", "type": "service", "subtype": "http", "name": "Import Dataset", "position": {"x": 880, "y": 0}, "config": {"service_id": "<YOLO_SERVICE_ID>", "service_action_id": "<IMPORT_ACTION_ID>"}, "input_mapping": {}, "metadata": {}},
+    {"id": "start-training", "type": "service", "subtype": "http", "name": "Start Training", "position": {"x": 1100, "y": 0}, "config": {"service_id": "<YOLO_SERVICE_ID>", "service_action_id": "<START_ACTION_ID>"}, "input_mapping": {}, "metadata": {}},
+    {"id": "wait", "type": "logic", "subtype": "wait", "name": "Wait", "position": {"x": 1320, "y": 0}, "config": {"mode": "duration", "duration_seconds": 60}, "input_mapping": {}, "metadata": {}},
+    {"id": "output", "type": "data", "subtype": "output", "name": "Output", "position": {"x": 1540, "y": 0}, "config": {"output_mapping": {"job_id": "{{nodes.start-training.output.job_id}}"}}, "input_mapping": {}, "metadata": {}}
+  ],
+  "edges": [
+    {"id": "e1", "source": "input", "target": "edge-agent", "source_handle": null, "target_handle": null, "label": null, "condition": null, "metadata": {}},
+    {"id": "e2", "source": "edge-agent", "target": "condition", "source_handle": null, "target_handle": null, "label": null, "condition": null, "metadata": {}},
+    {"id": "e3", "source": "condition", "target": "approval", "source_handle": "true", "target_handle": null, "label": "hard samples", "condition": null, "metadata": {}},
+    {"id": "e4", "source": "approval", "target": "import-dataset", "source_handle": null, "target_handle": null, "label": null, "condition": null, "metadata": {}},
+    {"id": "e5", "source": "import-dataset", "target": "start-training", "source_handle": null, "target_handle": null, "label": null, "condition": null, "metadata": {}},
+    {"id": "e6", "source": "start-training", "target": "wait", "source_handle": null, "target_handle": null, "label": null, "condition": null, "metadata": {}},
+    {"id": "e7", "source": "wait", "target": "output", "source_handle": null, "target_handle": null, "label": null, "condition": null, "metadata": {}}
+  ],
+  "variables": {"training_threshold": {"type": "number", "default": 0.8, "description": "Minimum evaluation threshold"}},
+  "metadata": {"scenario": "industrial-edge-ai"}
+}

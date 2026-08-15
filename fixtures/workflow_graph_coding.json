@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0",
+  "nodes": [
+    {
+      "id": "input",
+      "type": "data",
+      "subtype": "input",
+      "name": "Requirement",
+      "position": {"x": 0, "y": 100},
+      "config": {
+        "schema": {
+          "type": "object",
+          "properties": {"requirement": {"type": "string"}},
+          "required": ["requirement"]
+        }
+      },
+      "input_mapping": {},
+      "metadata": {}
+    },
+    {
+      "id": "planner",
+      "type": "agent",
+      "subtype": "agent",
+      "name": "Planner",
+      "position": {"x": 300, "y": 100},
+      "config": {
+        "agent_id": "<EXISTING_AGENT_ID>",
+        "role": "planner",
+        "timeout_seconds": 600
+      },
+      "input_mapping": {"task": "{{workflow.input.requirement}}"},
+      "metadata": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-input-planner",
+      "source": "input",
+      "target": "planner",
+      "source_handle": null,
+      "target_handle": null,
+      "label": null,
+      "condition": null,
+      "metadata": {}
+    }
+  ],
+  "variables": {},
+  "metadata": {}
+}

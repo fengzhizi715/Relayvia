@@ -1,0 +1,2 @@
+"""Service registry domain."""
+

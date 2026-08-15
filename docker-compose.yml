@@ -1,0 +1,20 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: relayvia
+      MYSQL_USER: relayvia
+      MYSQL_PASSWORD: relayvia
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3306:3306"
+    volumes:
+      - relayvia-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "relayvia", "-prelayvia"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  relayvia-mysql:
