@@ -11,8 +11,11 @@ from jsonschema import Draft7Validator
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.connectors.agents.http import HTTPAgentConnector
+from app.connectors.base import ExecutionResult
 from app.connectors.http import HTTPInvocationConfig
 from app.connectors.services.http import HTTPServiceConnector
+from app.connectors.tools.base import ToolInvocationConfig
+from app.connectors.tools.shell import ShellToolConnector
 from app.domain.credentials.model import Credential
 from app.infrastructure.security.url_policy import combine_service_url
 from app.runtime.executor.base import NodeExecutionContext, NodeExecutionResult, NodeExecutor
@@ -20,7 +23,12 @@ from app.runtime.executor.result import ExecutionError
 
 
 class DefaultNodeExecutor(NodeExecutor):
-    """Dispatch stable Graph node types behind the NodeExecutor boundary."""
+    """Dispatch stable Graph node types behind the NodeExecutor boundary.
+
+    Agent / Service / Tool execution delegates to the matching Connector, which
+    returns a unified `ExecutionResult`; the Runtime alone decides NodeRun /
+    WorkflowRun state afterwards.
+    """
 
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
@@ -32,6 +40,8 @@ class DefaultNodeExecutor(NodeExecutor):
             return await self._execute_agent(context)
         if node_type == "service" and subtype == "http":
             return await self._execute_service(context)
+        if node_type == "tool":
+            return await self._execute_tool(context)
         if node_type == "logic" and subtype == "condition":
             return self._execute_condition(context)
         if node_type == "logic" and subtype in {"parallel", "merge"}:
@@ -61,7 +71,7 @@ class DefaultNodeExecutor(NodeExecutor):
             credential = self._credential(agent.get("credential_id"))
         except ExecutionError as exc:
             return NodeExecutionResult(ok=False, error=exc)
-        result = await HTTPAgentConnector().invoke(
+        result = await HTTPAgentConnector().execute(
             HTTPInvocationConfig(
                 url=endpoint,
                 method=str(agent.get("http_method") or "POST"),
@@ -74,7 +84,7 @@ class DefaultNodeExecutor(NodeExecutor):
                 },
             )
         )
-        return _connector_result(result, agent.get("output_schema"), "Agent output")
+        return _execution_result_to_node(result, agent.get("output_schema"), "Agent output")
 
     async def _execute_service(self, context: NodeExecutionContext) -> NodeExecutionResult:
         config = context.node_definition["config"]
@@ -98,7 +108,7 @@ class DefaultNodeExecutor(NodeExecutor):
                 return invalid
         retry_policy = action.get("retry_policy") or {}
         retry_on_status = {int(status) for status in retry_policy.get("retry_on_status", [408, 429, 500, 502, 503, 504])}
-        result = await HTTPServiceConnector().invoke(
+        result = await HTTPServiceConnector().execute(
             HTTPInvocationConfig(
                 url=url,
                 method=str(action["method"]),
@@ -110,14 +120,28 @@ class DefaultNodeExecutor(NodeExecutor):
                 retry_on_status=retry_on_status,
             )
         )
-        return _connector_result(result, action.get("output_schema"), "Service output")
+        return _execution_result_to_node(result, action.get("output_schema"), "Service output")
+
+    async def _execute_tool(self, context: NodeExecutionContext) -> NodeExecutionResult:
+        config = context.resolved_config
+        command = config.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return _failure("MISSING_TOOL_COMMAND", "Tool command is required")
+        result = await ShellToolConnector().execute(
+            ToolInvocationConfig(
+                command=command,
+                working_directory=str(config["working_directory"]) if config.get("working_directory") else None,
+                timeout_seconds=int(config.get("timeout_seconds") or 60),
+            )
+        )
+        return _execution_result_to_node(result, None, "Tool output")
 
     def _execute_condition(self, context: NodeExecutionContext) -> NodeExecutionResult:
         expression = context.resolved_config.get("expression")
         if not isinstance(expression, dict):
             return _failure("INVALID_CONDITION", "Condition expression is missing")
         try:
-            matched = _compare(expression.get("left"), expression.get("operator"), expression.get("right"))
+            matched = _evaluate_expression(expression)
         except (TypeError, ValueError):
             return _failure("CONDITION_EVALUATION_FAILED", "Condition values cannot be compared with the configured operator")
         return NodeExecutionResult(ok=True, output={"selected_branch": "true" if matched else "false", "matched": matched})
@@ -162,9 +186,10 @@ def _validate_payload(value: Any, schema: Any, label: str) -> NodeExecutionResul
     return None
 
 
-def _connector_result(result, output_schema: Any, label: str) -> NodeExecutionResult:
-    if not result.ok:
-        return NodeExecutionResult(ok=False, retryable=result.retryable, error=ExecutionError(result.error_code or "HTTP_INVOCATION_FAILED", result.message or "HTTP invocation failed", retryable=result.retryable))
+def _execution_result_to_node(result: ExecutionResult, output_schema: Any, label: str) -> NodeExecutionResult:
+    """Map the unified Connector `ExecutionResult` onto the Node boundary."""
+    if result.status != "success":
+        return NodeExecutionResult(ok=False, retryable=result.retryable, error=result.error)
     invalid = _validate_payload(result.output or {}, output_schema, label)
     return invalid or NodeExecutionResult(ok=True, output=result.output or {})
 
@@ -188,6 +213,27 @@ def _compare(left: Any, operator: Any, right: Any) -> bool:
     if operator == "is_not_empty":
         return left is not None and (not hasattr(left, "__len__") or len(left) > 0)
     raise ValueError("unsupported operator")
+
+
+def _evaluate_expression(expr: Any) -> bool:
+    """Safe, finite Condition evaluation: recursive AND/OR of comparisons.
+
+    No eval / arbitrary code. Operands arrive already resolved by the
+    ContextResolver.
+    """
+    if not isinstance(expr, dict):
+        raise ValueError("invalid condition expression")
+    if "and" in expr:
+        clauses = expr["and"]
+        if not isinstance(clauses, list) or not clauses:
+            raise ValueError("invalid 'and' expression")
+        return all(_evaluate_expression(clause) for clause in clauses)
+    if "or" in expr:
+        clauses = expr["or"]
+        if not isinstance(clauses, list) or not clauses:
+            raise ValueError("invalid 'or' expression")
+        return any(_evaluate_expression(clause) for clause in clauses)
+    return _compare(expr.get("left"), expr.get("operator"), expr.get("right"))
 
 
 def _failure(code: str, message: str) -> NodeExecutionResult:

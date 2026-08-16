@@ -103,7 +103,10 @@ Phase 3 只定义 Contract，不绑定 Runner，也不执行命令。
 
 支持以下 subtype：
 
-* `condition`：`config.expression` 包含 `left`、`operator`、`right`；operator 仅限 `==`、`!=`、`>`、`>=`、`<`、`<=`、`contains`、`not_contains`、`is_empty`、`is_not_empty`。
+* `condition`：`config.expression` 为单个比较 `{"left", "operator", "right"}`，或递归组合
+  `{"and": [clause, ...]}` / `{"or": [clause, ...]}`（单层内 and/or 不可混用，且不能与比较共存）。
+  operator 仅限 `==`、`!=`、`>`、`>=`、`<`、`<=`、`contains`、`not_contains`、`is_empty`、`is_not_empty`。
+  左/右值可为字面量或 Context Reference。此扩展向后兼容：原单比较结构不变。
 * `parallel`：`config` 为 `{}`；分支只由 Edge 表达。
 * `merge`：`config.strategy` 当前为 `all`。
 * `router`：当前保留空 `config`，不实现 Runtime 语义。

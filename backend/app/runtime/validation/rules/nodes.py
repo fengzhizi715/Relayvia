@@ -84,27 +84,7 @@ def _validate_condition(node, index: GraphIndex, issues: list[ValidationIssue]) 
             )
         )
         return
-    if not isinstance(expression.get("left"), str) or expression.get("left") == "":
-        issues.append(
-            ValidationIssue(
-                code=ValidationCode.INVALID_CONDITION,
-                severity="error",
-                message="Condition left value is required",
-                node_id=node.id,
-                field="config.expression.left",
-            )
-        )
-    operator = expression.get("operator")
-    if operator not in CONDITION_OPERATORS:
-        issues.append(
-            ValidationIssue(
-                code=ValidationCode.INVALID_CONDITION_OPERATOR,
-                severity="error",
-                message=f"Condition operator {operator!r} is not supported",
-                node_id=node.id,
-                field="config.expression.operator",
-            )
-        )
+    _validate_expression(expression, node.id, issues)
 
     branches: dict[str, list] = {}
     for edge in index.outgoing_edges(node.id):
@@ -146,6 +126,71 @@ def _validate_condition(node, index: GraphIndex, issues: list[ValidationIssue]) 
                     details={"branch": handle, "edge_ids": [edge.id for edge in edges]},
                 )
             )
+
+
+def _validate_expression(expression: dict, node_id: str, issues: list[ValidationIssue]) -> None:
+    """Recursively validate a Condition clause: comparison or AND/OR."""
+    if "and" in expression or "or" in expression:
+        if "and" in expression and "or" in expression:
+            issues.append(
+                ValidationIssue(
+                    code=ValidationCode.INVALID_CONDITION,
+                    severity="error",
+                    message="Condition expression cannot combine 'and' and 'or'",
+                    node_id=node_id,
+                    field="config.expression",
+                )
+            )
+            return
+        clauses = expression.get("and") or expression.get("or")
+        if not isinstance(clauses, list) or not clauses:
+            issues.append(
+                ValidationIssue(
+                    code=ValidationCode.INVALID_CONDITION,
+                    severity="error",
+                    message="Condition 'and'/'or' requires a non-empty clause list",
+                    node_id=node_id,
+                    field="config.expression",
+                )
+            )
+            return
+        for clause in clauses:
+            if isinstance(clause, dict):
+                _validate_expression(clause, node_id, issues)
+            else:
+                issues.append(
+                    ValidationIssue(
+                        code=ValidationCode.INVALID_CONDITION,
+                        severity="error",
+                        message="Condition clauses must be structured expressions",
+                        node_id=node_id,
+                        field="config.expression",
+                    )
+                )
+        return
+
+    left = expression.get("left")
+    if left is None or left == "":
+        issues.append(
+            ValidationIssue(
+                code=ValidationCode.INVALID_CONDITION,
+                severity="error",
+                message="Condition left value is required",
+                node_id=node_id,
+                field="config.expression.left",
+            )
+        )
+    operator = expression.get("operator")
+    if operator not in CONDITION_OPERATORS:
+        issues.append(
+            ValidationIssue(
+                code=ValidationCode.INVALID_CONDITION_OPERATOR,
+                severity="error",
+                message=f"Condition operator {operator!r} is not supported",
+                node_id=node_id,
+                field="config.expression.operator",
+            )
+        )
 
 
 def _validate_human(node, issues: list[ValidationIssue]) -> None:

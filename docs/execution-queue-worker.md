@@ -153,10 +153,50 @@ run_execution_recovery(
 外部执行成功但 Worker 在写 COMPLETED 前崩溃 → Lease 过期 → Task 重新执行 →
 外部副作用可能重复。`execution_key` 供未来 Connector 实现幂等。
 
+## Context / Variable Mapping
+
+`ContextResolver`（`backend/app/runtime/context/`）在 Worker 执行前解析 Node 的
+`input_mapping` 与 `config`。Connector 只接收已经解析好的参数，**绝不解析
+`{{...}}`、绝不访问 WorkflowRun/NodeRun 状态**。
+
+支持引用：
+
+```text
+{{workflow.input.<path>}}      # WorkflowRun.input_json
+{{workflow.variables.<path>}}  # WorkflowRun.variables_json
+{{nodes.<id>.output.<path>}}   # 当前 Run 对应 NodeRun.output_json
+{{run.<path>}}                 # Run 元数据
+```
+
+- 纯引用（整串只有一个 Reference）**保留原始类型**（string/number/boolean/object/array/null）；
+  模板字符串插值结果为 string；dict / list 递归解析。
+- 缺失值抛 `UNRESOLVED_CONTEXT_REFERENCE`，Worker 直接产生结构化失败，**不调用 Connector**。
+- 静态可见的错误（如 `{{nodes.not_exist.output.x}}`）由 Phase 5 Validation 在 Version 阶段拒绝；
+  运行时缺失（字段不存在、上游未产出）由 Resolver 兜底——两层机制。
+- **NodeRun.input_json** 持久化真正传给 Execution Unit 的解析结果（Trace 用）；
+  Credential 不在其中（`credential_id` 引用单独由 Connector 注入，且不进入 Trace）。
+
 ## NodeExecutor Boundary
 
 `NodeExecutor.execute(context) → NodeExecutionResult`。`NodeExecutionContext` 包含
 node 定义快照、已解析 config/input、execution snapshot、attempt，**不暴露 DB Session**。
+
+### 统一 Connector Contract
+
+`app.connectors.base` 定义统一契约：`Connector.execute(request) → ExecutionResult`。
+
+```python
+ExecutionResult: status(success|failed), output, artifacts(预留), metadata, retryable, error
+```
+
+- **Agent / Service**：`HTTPAgentConnector` / `HTTPServiceConnector` 接收
+  `HTTPInvocationConfig`（url / method / headers / body / query / timeout /
+  credential / retry_on_status），返回 `ExecutionResult`。
+- **Tool**：`ShellToolConnector`（`connectors/tools/`）接收 `ToolInvocationConfig`
+  （command / working_directory / timeout），在 **Worker 可控环境**内以子进程执行
+  （Shell / Git / Test Command 均走 shell，超时强制终止），返回 `ExecutionResult`。
+- Connector 只调用外部能力并报告结果；**不修改 WorkflowRun / NodeRun 状态、不调度
+  下一个 Node、不决定 Retry**。这些全部由 Runtime 负责。
 
 默认 `DefaultNodeExecutor` 当前支持：
 
@@ -183,19 +223,27 @@ encode（缺参报 `MISSING_PATH_PARAMETER`），Action 静态 headers 与 Servi
 
 ### Condition 与 Data / Logic 节点
 
-- **Condition**：计算表达式，产出 `{"selected_branch": "true|false", "matched": bool}`。
-  该输出仅供 Scheduler 分支使用（Validation 禁止用户直接引用 Logic 节点输出）。
+- **Condition**：计算表达式（支持 `== != > >= < <= contains not_contains is_empty is_not_empty`，
+  以及递归 `{"and": [...]}` / `{"or": [...]}` 组合），产出
+  `{"selected_branch": "true|false", "matched": bool}`。该输出仅供 Scheduler 分支使用
+  （Validation 禁止用户直接引用 Logic 节点输出）。
+- **Parallel**：完成后同时激活多个后继 Node（可被不同 Worker 并行 Claim），不等待、不聚合。
+- **Merge（ALL）**：等待**当前 Run 中实际激活**的所有上游分支完成后才 Ready——未选中的
+  Condition 分支（SKIPPED）不阻塞 Merge。
 - **Data Transform / Output**：对 `mappings` / `output_mapping` 求值（引用已被
   ContextResolver 解析）后写入 output。
-- **Parallel / Merge**：当前为**透传**（`output = resolved_input`），只推进状态，**尚未
-  实现分支 fan-out / 结果合并语义**。跨分支数据依赖由 Validation 保证不会出现，因此
-  不会读到未产生的结果。
+
+### Tool 节点
+
+`tool`（Shell / Git / Test Command）：按 `command` / `working_directory` / `timeout_seconds`
+在 Worker 内以子进程执行；输出 `{"stdout", "exit_code"}`（stderr 进 metadata），非零退出码
+按可重试失败处理，超时强制终止（`TOOL_TIMEOUT`，非可重试）。
 
 ### 安全与未实现
 
 Credential 只在 Worker 内按 `credential_id` 临时解密，绝不进入 Snapshot、Output、Task
-Payload 或 Error。Human、Wait、Router、Tool 与 Local/Custom Agent 仍返回明确的
-`UNSUPPORTED_NODE_EXECUTION`，不会伪装为已执行。HTTP 响应体限制为 1MB
+Payload 或 Error；失败结果也不含 Secret。Human、Wait、Router、Local/Custom Agent 仍返回
+明确的 `UNSUPPORTED_NODE_EXECUTION`，不会伪装为已执行。HTTP 响应体限制为 1MB
 （`MAX_RESPONSE_BYTES`），超限报 `RESPONSE_TOO_LARGE`（非 retryable）。
 
 ## Branch and Run Gating
@@ -216,8 +264,9 @@ Payload 或 Error。Human、Wait、Router、Tool 与 Local/Custom Agent 仍返�
 
 ## 当前边界
 
-尚未实现：Shell/Git Tool、Codex/Cursor/OpenCode Adapter、Local/Custom Agent、
-Human Approval Runtime、Wait Timer、Router、SSE Run Event 与 Artifact Runtime。
+尚未实现：Codex/Cursor/OpenCode Adapter、Local/Custom Agent、Human Approval Runtime、
+Wait Timer、Router、SSE Run Event 与 Artifact Storage（`ExecutionResult.artifacts` 已预留）。
+HTTP Agent / HTTP Service / Shell / Git / Test Command Tool 已可执行。
 
 ## 配置
 

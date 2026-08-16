@@ -58,6 +58,12 @@ def _build_execution_context(session_factory: sessionmaker[Session], task: Claim
             run={"id": run.id, "status": run.status, "created_at": run.created_at.isoformat() if run.created_at else None},
         )
         resolved_input = resolver.resolve(node.input_mapping)
+        # Persist the resolved input for Run Trace. Credentials never reach
+        # this value: they are injected separately by the Connector layer.
+        node_run = db.get(NodeRun, task.node_run_id)
+        if node_run is not None:
+            node_run.input_json = resolved_input
+            db.commit()
         return NodeExecutionContext(
             workflow_run_id=run.id,
             node_run_id=task.node_run_id,

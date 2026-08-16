@@ -2,7 +2,7 @@
 
 Relayvia 是一个连接、编排、执行和追踪已有 Agent 与 Service 的平台。
 
-当前实现到 Phase 7：Agent/Service Registry、Credential Reference、HTTP Connection Test、Workflow Graph 1.0、不可变 Workflow Version、可视化 Workflow Builder、Validation Engine、Workflow Run / Node Run + Runtime State Machine，以及 **MySQL-backed Execution Queue + Scheduler + 独立 Worker**（`FOR UPDATE SKIP LOCKED` 安全 Claim、Lease + Token Fencing、Retry/Backoff、崩溃恢复、at-least-once）。Worker 默认可执行 HTTP Agent、HTTP Service Action、Condition 与 Data/Parallel/Merge 基础节点；Condition 只执行选中分支，Pause 不会启动新任务，Node 失败采用 fail-fast 取消未完成同 Run 任务。
+当前实现到 Phase 10：Agent/Service Registry、Credential Reference、Workflow Graph 1.0、不可变 Workflow Version、可视化 Workflow Builder、Validation Engine、Workflow Run / Node Run + Runtime State Machine、**MySQL-backed Execution Queue + Scheduler + 独立 Worker**、**Execution Unit + Connector**（HTTP Agent / Service Action / Shell / Git / Test Command 执行，统一 `Connector.execute() → ExecutionResult`）、**Context / Variable Mapping**（`ContextResolver`，上游输出可被下游引用），以及 **Condition / Parallel / Merge**（Condition 支持 AND/OR 组合、只激活选中分支；Parallel 并行调度；Merge ALL 只等待实际激活分支；并发完成分支时 Merge 幂等只调度一次）。
 
 Execution Queue 文档：[`docs/execution-queue-worker.md`](docs/execution-queue-worker.md)
 Runtime 状态机文档：[`docs/workflow-runtime-state-machine.md`](docs/workflow-runtime-state-machine.md)

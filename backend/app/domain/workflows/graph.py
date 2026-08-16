@@ -35,6 +35,39 @@ class ConditionOperator(StrEnum):
     IS_NOT_EMPTY = "is_not_empty"
 
 
+class ConditionExpression(BaseModel):
+    """A Condition clause: a single comparison, or a recursive AND/OR of
+    clauses. Exactly one shape is allowed per clause.
+
+    Comparison:  {"left": ..., "operator": ">=", "right": ...}
+    Combination: {"and": [<clause>, ...]} or {"or": [<clause>, ...]}
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    and_: list["ConditionExpression"] | None = Field(default=None, alias="and")
+    or_: list["ConditionExpression"] | None = Field(default=None, alias="or")
+    left: Any = None
+    operator: ConditionOperator | None = None
+    right: Any = None
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> "ConditionExpression":
+        combination_count = (self.and_ is not None) + (self.or_ is not None)
+        if combination_count > 1:
+            raise ValueError("Condition expression cannot combine 'and' and 'or'")
+        if combination_count == 1:
+            if self.left is not None or self.operator is not None or self.right is not None:
+                raise ValueError("Condition 'and'/'or' cannot be combined with a comparison")
+            clauses = self.and_ if self.and_ is not None else self.or_
+            if not clauses:
+                raise ValueError("Condition 'and'/'or' requires at least one clause")
+            return self
+        if self.operator is None:
+            raise ValueError("Condition comparison requires an operator")
+        return self
+
+
 class VariableType(StrEnum):
     STRING = "string"
     NUMBER = "number"
@@ -82,14 +115,6 @@ class ToolNodeConfig(BaseModel):
     command: str = Field(min_length=1, max_length=4000)
     working_directory: str | None = Field(default=None, max_length=2048)
     timeout_seconds: int = Field(default=600, ge=1, le=86400)
-
-
-class ConditionExpression(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    left: Any
-    operator: ConditionOperator
-    right: Any = None
 
 
 class ConditionNodeConfig(BaseModel):
