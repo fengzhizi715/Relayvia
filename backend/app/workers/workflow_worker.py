@@ -28,7 +28,8 @@ from app.infrastructure.database.session import get_session_factory
 from app.infrastructure.execution_backend.base import ClaimedTask, ExecutionBackend
 from app.infrastructure.execution_backend.mysql import MySQLExecutionBackend
 from app.runtime.context import ContextResolver, UnresolvedContextReference
-from app.runtime.executor.base import NodeExecutionContext, NodeExecutionResult, NodeExecutor, PlaceholderNodeExecutor
+from app.runtime.executor.base import NodeExecutionContext, NodeExecutionResult, NodeExecutor
+from app.runtime.executor.default import DefaultNodeExecutor
 from app.runtime.executor.result import ExecutionError
 from app.runtime.recovery.execution_recovery import run_execution_recovery
 from app.runtime.scheduler.workflow_scheduler import WorkflowScheduler
@@ -62,6 +63,7 @@ def _build_execution_context(session_factory: sessionmaker[Session], task: Claim
             node_run_id=task.node_run_id,
             node_id=node.id,
             node_definition=node.model_dump(mode="json"),
+            resolved_config=resolver.resolve(node.config),
             resolved_input=resolved_input,
             execution_snapshot=run.execution_snapshot_json,
             attempt=task.attempt,
@@ -145,7 +147,7 @@ async def run_worker(
 
     backend = MySQLExecutionBackend(session_factory, lease_seconds=lease_seconds)
     scheduler = WorkflowScheduler()
-    executor = executor or PlaceholderNodeExecutor()
+    executor = executor or DefaultNodeExecutor(session_factory)
 
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()

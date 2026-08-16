@@ -38,6 +38,8 @@ class RegistryServiceAction:
     name: str
     enabled: bool
     timeout_seconds: int | None = None
+    query_schema: dict[str, Any] = field(default_factory=dict)
+    path_schema: dict[str, Any] = field(default_factory=dict)
     input_schema: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] = field(default_factory=dict)
 

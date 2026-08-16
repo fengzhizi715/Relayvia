@@ -26,18 +26,69 @@ from app.runtime.validation.graph_index import GraphIndex
 
 
 def find_ready_nodes(graph: WorkflowGraph, node_runs: list[NodeRun]) -> list[str]:
-    """Pure function: PENDING nodes whose control-flow predecessors are all
-    COMPLETED. Used by the Scheduler today and by later phases unchanged."""
+    """Return PENDING nodes whose *active* control-flow inputs completed.
+
+    A Condition activates exactly one output handle.  Inactive Condition edges
+    and descendants already marked SKIPPED do not participate in a join. This
+    permits true/false branches to converge without accidentally waiting for,
+    or executing, the unselected path.
+    """
     index = GraphIndex.build(graph)
     status_by_id = {node_run.node_id: NodeRunStatus(node_run.status) for node_run in node_runs}
-    completed = {node_id for node_id, status in status_by_id.items() if status is NodeRunStatus.COMPLETED}
+    runs_by_node_id = {node_run.node_id: node_run for node_run in node_runs}
     ready: list[str] = []
     for node in graph.nodes:
         if status_by_id.get(node.id) is not NodeRunStatus.PENDING:
             continue
-        if all(edge.source in completed for edge in index.incoming_edges(node.id)):
+        active_edges = [
+            edge for edge in index.incoming_edges(node.id) if _edge_is_active(edge, index, status_by_id, runs_by_node_id)
+        ]
+        if active_edges and all(status_by_id.get(edge.source) is NodeRunStatus.COMPLETED for edge in active_edges):
             ready.append(node.id)
     return ready
+
+
+def _edge_is_active(edge, index: GraphIndex, status_by_id: dict[str, NodeRunStatus], runs_by_node_id: dict[str, NodeRun]) -> bool:
+    source_status = status_by_id.get(edge.source)
+    if source_status is NodeRunStatus.SKIPPED:
+        return False
+    source_node = index.node(edge.source)
+    if source_node is None or source_node.type.value != "logic" or source_node.subtype != "condition":
+        return True
+    if source_status is not NodeRunStatus.COMPLETED:
+        return True
+    output = runs_by_node_id[edge.source].output_json
+    selected = output.get("selected_branch") if isinstance(output, dict) else None
+    return selected not in {"true", "false"} or edge.source_handle == selected
+
+
+def mark_unreachable_condition_nodes(graph: WorkflowGraph, node_runs: list[NodeRun]) -> list[str]:
+    """Mark the unselected Condition path (including descendants) as SKIPPED.
+
+    The fixed-point loop also handles a false branch that later converges into
+    a shared output: once the selected input is active, that output remains
+    eligible rather than being skipped.
+    """
+    index = GraphIndex.build(graph)
+    skipped: list[str] = []
+    changed = True
+    while changed:
+        changed = False
+        status_by_id = {node_run.node_id: NodeRunStatus(node_run.status) for node_run in node_runs}
+        runs_by_node_id = {node_run.node_id: node_run for node_run in node_runs}
+        for node in graph.nodes:
+            node_run = runs_by_node_id.get(node.id)
+            incoming = index.incoming_edges(node.id)
+            if node_run is None or NodeRunStatus(node_run.status) is not NodeRunStatus.PENDING or not incoming:
+                continue
+            if any(_edge_is_active(edge, index, status_by_id, runs_by_node_id) for edge in incoming):
+                continue
+            transition_node_run(NodeRunStatus.PENDING, NodeRunStatus.SKIPPED)
+            node_run.status = NodeRunStatus.SKIPPED.value
+            node_run.finished_at = utc_now()
+            skipped.append(node.id)
+            changed = True
+    return skipped
 
 
 def derive_workflow_state(graph: WorkflowGraph, node_runs: list[NodeRun]) -> WorkflowRunStatus:
@@ -73,6 +124,7 @@ class WorkflowScheduler:
 
         graph = parse_workflow_graph(run.graph_snapshot_json)
         node_runs = list_node_runs(db, run_id)
+        mark_unreachable_condition_nodes(graph, node_runs)
         submitted: list[str] = []
         for node_id in find_ready_nodes(graph, node_runs):
             node_run = next((node_run for node_run in node_runs if node_run.node_id == node_id), None)
@@ -124,6 +176,9 @@ class WorkflowScheduler:
             run.status = derived.value
             if derived in (WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, WorkflowRunStatus.CANCELLED):
                 run.finished_at = utc_now()
+            if derived is WorkflowRunStatus.FAILED:
+                # Fail-fast: prevent queued parallel siblings from starting.
+                self.cancel_run_tasks(db, run_id)
         return derived
 
     def cancel_run_tasks(self, db: Session, run_id: str) -> None:

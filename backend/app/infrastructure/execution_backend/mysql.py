@@ -14,9 +14,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.domain.execution.models import ExecutionTask
 from app.domain.execution.state_machine import ExecutionTaskStatus, is_execution_task_terminal, transition_execution_task
-from app.domain.runs.models import NodeRun
+from app.domain.runs.models import NodeRun, WorkflowRun
 from app.infrastructure.database.base import utc_now
-from app.runtime.state_machine import NodeRunStatus, is_node_run_terminal, transition_node_run
+from app.runtime.state_machine import NodeRunStatus, WorkflowRunStatus, is_node_run_terminal, transition_node_run
 from .base import ClaimedTask, ExecutionBackend
 
 
@@ -48,9 +48,11 @@ class MySQLExecutionBackend(ExecutionBackend):
             now = utc_now()
             task = db.scalar(
                 select(ExecutionTask)
+                .join(WorkflowRun, WorkflowRun.id == ExecutionTask.workflow_run_id)
                 .where(
                     ExecutionTask.status == ExecutionTaskStatus.PENDING.value,
                     ExecutionTask.available_at <= now,
+                    WorkflowRun.status == WorkflowRunStatus.RUNNING.value,
                 )
                 .order_by(ExecutionTask.priority.desc(), ExecutionTask.available_at.asc(), ExecutionTask.created_at.asc())
                 .limit(1)
@@ -94,6 +96,11 @@ class MySQLExecutionBackend(ExecutionBackend):
         with self._session_factory() as db:
             task = db.scalar(select(ExecutionTask).where(ExecutionTask.id == task_id).with_for_update())
             if not self._owns(db, task, worker_id, lease_token):
+                return False
+            run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == task.workflow_run_id).with_for_update())
+            if run is None or WorkflowRunStatus(run.status) is not WorkflowRunStatus.RUNNING:
+                self._release_or_cancel_for_run_state(db, task, run)
+                db.commit()
                 return False
             transition_execution_task(ExecutionTaskStatus(task.status), ExecutionTaskStatus.RUNNING)
             task.status = ExecutionTaskStatus.RUNNING.value
@@ -216,6 +223,28 @@ class MySQLExecutionBackend(ExecutionBackend):
         if is_execution_task_terminal(ExecutionTaskStatus(task.status)):
             return False
         return task.locked_by == worker_id and task.lease_token == lease_token
+
+    @staticmethod
+    def _release_or_cancel_for_run_state(db: Session, task: ExecutionTask, run: WorkflowRun | None) -> None:
+        """A claimed task must not start after pause/wait/terminal transition.
+
+        Paused and waiting runs retain their queued work for resume. Terminal
+        runs cancel it, which also fences a worker that raced with fail-fast
+        reconciliation.
+        """
+        status = WorkflowRunStatus(run.status) if run is not None else WorkflowRunStatus.CANCELLED
+        if status in {WorkflowRunStatus.PAUSED, WorkflowRunStatus.WAITING}:
+            transition_execution_task(ExecutionTaskStatus(task.status), ExecutionTaskStatus.PENDING)
+            task.status = ExecutionTaskStatus.PENDING.value
+            task.locked_by = None
+            task.lease_token = None
+            task.locked_at = None
+            task.lease_expires_at = None
+            return
+        transition_execution_task(ExecutionTaskStatus(task.status), ExecutionTaskStatus.CANCELLED)
+        task.status = ExecutionTaskStatus.CANCELLED.value
+        task.finished_at = utc_now()
+        MySQLExecutionBackend._node_cancelled(db, task.node_run_id)
 
     @staticmethod
     def _node_status(db: Session, node_run_id: str, *, target: NodeRunStatus, allow_same: bool) -> None:

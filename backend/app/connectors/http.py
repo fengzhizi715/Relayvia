@@ -1,10 +1,12 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import json
 from time import perf_counter
+from typing import Any
 
 import httpx
 
-from app.connectors.result import ConnectionTestResult, ConnectionTestStatus
+from app.connectors.result import ConnectionTestResult, ConnectionTestStatus, HTTPInvocationResult
 from app.domain.credentials.model import Credential, CredentialType
 from app.infrastructure.security.crypto import CredentialCrypto
 
@@ -15,6 +17,18 @@ class HTTPConnectionConfig:
     timeout_seconds: int
     headers: dict[str, str] = field(default_factory=dict)
     credential: Credential | None = None
+
+
+@dataclass(frozen=True)
+class HTTPInvocationConfig:
+    url: str
+    method: str
+    timeout_seconds: int
+    headers: dict[str, str] = field(default_factory=dict)
+    credential: Credential | None = None
+    json_body: Any = None
+    query: dict[str, Any] = field(default_factory=dict)
+    retry_on_status: set[int] = field(default_factory=lambda: {408, 429, 500, 502, 503, 504})
 
 
 def _authentication(config: HTTPConnectionConfig) -> tuple[dict[str, str], tuple[str, str] | None]:
@@ -85,3 +99,78 @@ async def test_http_connection(config: HTTPConnectionConfig) -> ConnectionTestRe
         error_code=f"HTTP_{response.status_code}",
         message=f"HTTP {response.status_code} {response.reason_phrase}",
     )
+
+
+# Cap on the response body read by a single invocation. Protects the Worker
+# from unbounded response sizes; oversized responses are treated as a
+# non-retryable failure (a retry will not make the body smaller).
+MAX_RESPONSE_BYTES = 1_000_000
+
+
+async def invoke_http(config: HTTPInvocationConfig) -> HTTPInvocationResult:
+    """Invoke a configured HTTP capability without persisting secret details.
+
+    The response body is streamed and capped at `MAX_RESPONSE_BYTES`; larger
+    responses are rejected as `RESPONSE_TOO_LARGE` (non-retryable).
+    """
+    headers, basic_auth = _authentication(
+        HTTPConnectionConfig(
+            url=config.url,
+            timeout_seconds=config.timeout_seconds,
+            headers=config.headers,
+            credential=config.credential,
+        )
+    )
+    status_code = None
+    try:
+        async with httpx.AsyncClient(
+            timeout=config.timeout_seconds,
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            async with client.stream(
+                config.method,
+                config.url,
+                headers=headers,
+                auth=basic_auth,
+                params=config.query or None,
+                json=config.json_body,
+            ) as response:
+                status_code = response.status_code
+                if not 200 <= response.status_code < 300:
+                    return HTTPInvocationResult(
+                        ok=False,
+                        status_code=response.status_code,
+                        retryable=response.status_code in config.retry_on_status,
+                        error_code=f"HTTP_{response.status_code}",
+                        message=f"HTTP endpoint returned status {response.status_code}",
+                    )
+                content = bytearray()
+                async for chunk in response.aiter_bytes():
+                    content.extend(chunk)
+                    if len(content) > MAX_RESPONSE_BYTES:
+                        return HTTPInvocationResult(
+                            ok=False,
+                            status_code=response.status_code,
+                            retryable=False,
+                            error_code="RESPONSE_TOO_LARGE",
+                            message=f"HTTP response exceeded {MAX_RESPONSE_BYTES} bytes",
+                        )
+    except httpx.TimeoutException:
+        return HTTPInvocationResult(ok=False, retryable=True, error_code="HTTP_TIMEOUT", message="HTTP invocation timed out")
+    except httpx.RequestError:
+        return HTTPInvocationResult(
+            ok=False,
+            retryable=True,
+            error_code="HTTP_REQUEST_FAILED",
+            message="Unable to reach the configured HTTP endpoint",
+        )
+
+    text = bytes(content).decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        payload = {"body": text}
+    if not isinstance(payload, dict):
+        payload = {"result": payload}
+    return HTTPInvocationResult(ok=True, status_code=status_code, output=payload)

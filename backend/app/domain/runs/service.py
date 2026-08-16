@@ -121,6 +121,8 @@ def _registry_context(graph: WorkflowGraph, agents: dict[str, Agent], services: 
                 name=action.name,
                 enabled=action.enabled,
                 timeout_seconds=action.timeout_seconds,
+                query_schema=action.query_schema_json or {},
+                path_schema=action.path_schema_json or {},
                 input_schema=action.input_schema_json or {},
                 output_schema=action.output_schema_json or {},
             )
@@ -137,6 +139,8 @@ def _build_execution_snapshot(agents: dict[str, Agent], services: dict[str, Serv
                 name=agent.name,
                 connector_type=agent.connector_type,
                 endpoint=agent.endpoint,
+                http_method=agent.http_method,
+                headers=agent.headers_json or {},
                 health_check_url=agent.health_check_url,
                 timeout_seconds=agent.timeout_seconds,
                 input_schema=agent.input_schema_json or {},
@@ -162,6 +166,9 @@ def _build_execution_snapshot(agents: dict[str, Agent], services: dict[str, Serv
                 name=action.name,
                 method=action.method,
                 path=action.path,
+                headers=action.headers_json or {},
+                query_schema=action.query_schema_json or {},
+                path_schema=action.path_schema_json or {},
                 timeout_seconds=action.timeout_seconds,
                 retry_policy=action.retry_policy_json or {},
                 input_schema=action.input_schema_json or {},
@@ -373,6 +380,10 @@ def resume_run(db: Session, run_id: str) -> WorkflowRunRead:
     transition_workflow_run(WorkflowRunStatus(run.status), WorkflowRunStatus.RUNNING)
     run.status = WorkflowRunStatus.RUNNING.value
     run.paused_at = None
+    db.commit()
+    # Existing tasks were deliberately retained while paused; this also queues
+    # any node that became ready immediately before the pause transition.
+    WorkflowScheduler().schedule_ready_nodes(db, run.id)
     db.commit()
     db.refresh(run)
     return _to_read(db, run)

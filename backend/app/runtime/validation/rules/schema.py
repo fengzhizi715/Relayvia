@@ -27,8 +27,7 @@ def validate_schema(graph: WorkflowGraph, index: GraphIndex, context: Validation
             schema = _node_input_schema(index, context, node.id)
             _validate_mapping(node, schema, graph, index, context, issues)
         elif node.type == NodeType.SERVICE:
-            schema = _node_input_schema(index, context, node.id)
-            _validate_mapping(node, schema, graph, index, context, issues)
+            _validate_service_mapping(node, context, graph, index, issues)
     return issues
 
 
@@ -45,10 +44,37 @@ def _node_input_schema(index: GraphIndex, context: ValidationContext, node_id: s
     return None
 
 
-def _validate_mapping(node, schema: dict[str, Any] | None, graph, index, context, issues: list[ValidationIssue]) -> None:
-    if not isinstance(schema, dict) or schema.get("type") != "object":
+def _validate_service_mapping(node, context, graph, index, issues: list[ValidationIssue]) -> None:
+    action = context.service_actions.get(node.config.get("service_action_id"))
+    if action is None:
         return
     mapping = node.input_mapping if isinstance(node.input_mapping, dict) else {}
+    # A Service mapping can explicitly distinguish the HTTP request locations.
+    # Legacy/direct mappings remain the request body for backward compatibility.
+    if {"path", "query", "body"} & mapping.keys():
+        _validate_mapping(node, action.path_schema, graph, index, context, issues, mapping.get("path", {}), "input_mapping.path")
+        _validate_mapping(node, action.query_schema, graph, index, context, issues, mapping.get("query", {}), "input_mapping.query")
+        _validate_mapping(node, action.input_schema, graph, index, context, issues, mapping.get("body", {}), "input_mapping.body")
+        return
+    _validate_mapping(node, action.input_schema, graph, index, context, issues)
+
+
+def _validate_mapping(
+    node,
+    schema: dict[str, Any] | None,
+    graph,
+    index,
+    context,
+    issues: list[ValidationIssue],
+    mapping: dict[str, Any] | None = None,
+    field_prefix: str = "input_mapping",
+) -> None:
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        return
+    if mapping is None:
+        mapping = node.input_mapping if isinstance(node.input_mapping, dict) else {}
+    elif not isinstance(mapping, dict):
+        mapping = {}
     properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
 
     for required in schema.get("required", []):
@@ -59,7 +85,7 @@ def _validate_mapping(node, schema: dict[str, Any] | None, graph, index, context
                     severity="error",
                     message=f"Required input {required!r} is not mapped",
                     node_id=node.id,
-                    field=f"input_mapping.{required}",
+                    field=f"{field_prefix}.{required}",
                 )
             )
 
@@ -72,7 +98,7 @@ def _validate_mapping(node, schema: dict[str, Any] | None, graph, index, context
                         severity="error",
                         message=f"Input field {key!r} is not allowed by the target schema",
                         node_id=node.id,
-                        field=f"input_mapping.{key}",
+                        field=f"{field_prefix}.{key}",
                     )
                 )
 
@@ -94,7 +120,7 @@ def _validate_mapping(node, schema: dict[str, Any] | None, graph, index, context
                     severity="error",
                     message=f"Input {key!r} has type {source_type!r} but the target expects {target_type!r}",
                     node_id=node.id,
-                    field=f"input_mapping.{key}",
+                    field=f"{field_prefix}.{key}",
                     details={"source_type": source_type, "target_type": target_type},
                 )
             )
@@ -105,7 +131,7 @@ def _validate_mapping(node, schema: dict[str, Any] | None, graph, index, context
                     severity="warning",
                     message=f"Input {key!r} is a number mapped to an integer target",
                     node_id=node.id,
-                    field=f"input_mapping.{key}",
+                    field=f"{field_prefix}.{key}",
                     details={"source_type": source_type, "target_type": target_type},
                 )
             )

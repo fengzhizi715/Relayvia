@@ -39,6 +39,11 @@ finished_at / created_at / updated_at`。
 - `execution_key = "{run_id}:{node_run_id}"`，Retry 期间保持不变；未来 HTTP Service
   Connector 可映射到 `Idempotency-Key`。
 - Claim 查询索引：`(status, available_at, priority, created_at)`。
+- **索引权衡**：Claim 现在 join `workflow_runs` 过滤 `status='running'`（保证 Paused /
+  Waiting / Terminal 的 Run 不可被 Claim）。该过滤会读取 `workflow_runs.status`
+  （已有独立索引），因此 `(status, available_at, priority, created_at)` 不再能完全
+  覆盖整个查询。V1 规模下可接受；若 Queue 规模增长，应将 Run 的"可 Claim"状态冗余到
+  `execution_tasks` 的派生列并纳入索引，而不是放宽对 Run 状态的检查。
 
 ## Task State Machine
 
@@ -151,9 +156,57 @@ run_execution_recovery(
 ## NodeExecutor Boundary
 
 `NodeExecutor.execute(context) → NodeExecutionResult`。`NodeExecutionContext` 包含
-node 定义快照、已解析 input、execution snapshot、attempt，**不暴露 DB Session**。
-Phase 7 默认 `PlaceholderNodeExecutor`（返回 UNSUPPORTED）；FakeExecutor 仅存在于
-测试。Phase 8 接入 ExecutionUnit + Connector。
+node 定义快照、已解析 config/input、execution snapshot、attempt，**不暴露 DB Session**。
+
+默认 `DefaultNodeExecutor` 当前支持：
+
+### HTTP Agent 调用契约
+
+按 Snapshot 中的 `http_method` / `headers` / `timeout` 调用 endpoint，请求体为：
+
+```json
+{
+  "input": { "…": "resolved input_mapping 结果" },
+  "context": { "workflow_run_id": "…", "node_id": "…", "attempt": 1 }
+}
+```
+
+- 响应必须是 JSON object（或会被包装为 `{"result": …}`）；按 Agent `output_schema`
+  校验，通过后写入 `NodeRun.output_json`。
+- 这是对外 Agent 的稳定调用契约，接入任何 HTTP Agent 都以此为准。
+
+### HTTP Service Action 调用契约
+
+`input_mapping` 可显式映射为 `{path, query, body}`；path 中的 `{param}` 安全 URL
+encode（缺参报 `MISSING_PATH_PARAMETER`），Action 静态 headers 与 Service Credential
+由 Connector 使用。若 mapping 不含 `path/query/body` 键，整体作为 body（向后兼容）。
+
+### Condition 与 Data / Logic 节点
+
+- **Condition**：计算表达式，产出 `{"selected_branch": "true|false", "matched": bool}`。
+  该输出仅供 Scheduler 分支使用（Validation 禁止用户直接引用 Logic 节点输出）。
+- **Data Transform / Output**：对 `mappings` / `output_mapping` 求值（引用已被
+  ContextResolver 解析）后写入 output。
+- **Parallel / Merge**：当前为**透传**（`output = resolved_input`），只推进状态，**尚未
+  实现分支 fan-out / 结果合并语义**。跨分支数据依赖由 Validation 保证不会出现，因此
+  不会读到未产生的结果。
+
+### 安全与未实现
+
+Credential 只在 Worker 内按 `credential_id` 临时解密，绝不进入 Snapshot、Output、Task
+Payload 或 Error。Human、Wait、Router、Tool 与 Local/Custom Agent 仍返回明确的
+`UNSUPPORTED_NODE_EXECUTION`，不会伪装为已执行。HTTP 响应体限制为 1MB
+（`MAX_RESPONSE_BYTES`），超限报 `RESPONSE_TOO_LARGE`（非 retryable）。
+
+## Branch and Run Gating
+
+- Condition 完成后，Scheduler 只激活 `selected_branch` 对应的 Edge；未选中分支及其
+  无活跃入边的后代递归标记为 `SKIPPED`。汇合节点只等待仍活跃的入边。
+- **Pause 是协作式的**：已在执行中的外部调用允许完成，但 Task 的 claim / start 都要求
+  父 Run 为 `RUNNING`；已 claim 但尚未 start 的 Task 会回到 `PENDING`，Resume 后继续。
+- **Failure 是 fail-fast**：一个 Node 耗尽重试进入 FAILED 后，Scheduler 将同一 Run
+  其他非终态 Task / NodeRun 取消。无法强制中断已经发出的外部 HTTP 请求，但其迟到结果
+  会被已取消 Task 的 fencing 拒绝。
 
 ## Worker 与 Relayvia Runner 的区别
 
@@ -161,11 +214,10 @@ Phase 7 默认 `PlaceholderNodeExecutor`（返回 UNSUPPORTED）；FakeExecutor 
 - **Relayvia Runner**：用户笔记本 / Mac mini / 内网 / Edge 的本地执行组件。
 - Phase 7 不实现 Runner。
 
-## Phase 7 vs Phase 8 边界
+## 当前边界
 
-Phase 7 只做执行基础设施。以下属于 Phase 8+：HTTP Agent/Service Connector 执行、
-Shell/Git Tool、Codex/Cursor/OpenCode Adapter、完整 Condition/Parallel/Merge、
-Human Approval Runtime、Wait Timer、SSE Run Event、Artifact Runtime。
+尚未实现：Shell/Git Tool、Codex/Cursor/OpenCode Adapter、Local/Custom Agent、
+Human Approval Runtime、Wait Timer、Router、SSE Run Event 与 Artifact Runtime。
 
 ## 配置
 

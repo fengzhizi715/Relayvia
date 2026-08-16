@@ -94,7 +94,7 @@ Workflow
 
 - **Graph Snapshot**：`graph_snapshot_json`，创建时深拷贝 Version Graph，Draft/Registry
   后续变更不影响历史 Run。
-- **Execution Snapshot**：`execution_snapshot_json`（`schema_version: "1"`），保存
+- **Execution Snapshot**：`execution_snapshot_json`（当前 `schema_version: "2"`），保存
   agent / service / service_action 的**非 Secret 调用配置**（endpoint、timeout、
   schema、method/path、retry_policy 等），按 id 去重。
 - **Credential**：只保存 `credential_id`。绝不读取/解密/持久化 Secret。
@@ -112,8 +112,9 @@ Workflow
 
 ## Pause / Resume / Cancel
 
-- **Pause**：`RUNNING|WAITING → PAUSED`（仅 Control Plane 语义；无 Worker 时不涉及外部进程中断）。
-- **Resume**：`PAUSED → RUNNING`。
+- **Pause**：`RUNNING|WAITING → PAUSED`。已执行中的外部调用采用协作式暂停、允许完成；
+  尚未 start 的 Task 不会执行，保留到 Resume。
+- **Resume**：`PAUSED → RUNNING`，恢复保留 Task 并重新调度已 Ready 的 Node。
 - **Cancel**：非 Terminal → `CANCELLED`（terminal 再 cancel 返回 `RUN_ALREADY_TERMINAL`）；
   所有未完成 NodeRun → `CANCELLED`（已完成的历史 NodeRun 保持 `COMPLETED`）。
 

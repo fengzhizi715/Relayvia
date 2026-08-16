@@ -94,6 +94,11 @@ POST /api/workflows/{id}/validate
 - Service Action：`MISSING_SERVICE_ACTION_REFERENCE` / `SERVICE_ACTION_NOT_FOUND`
   / `SERVICE_ACTION_DISABLED`(ERROR) / `SERVICE_ACTION_MISMATCH`。
 
+Service Node 的 `input_mapping` 既可保持原有的直接 Body 映射，也可使用显式 HTTP
+结构：`{ "path": {...}, "query": {...}, "body": {...} }`。后者分别根据 Action 的
+`path_schema`、`query_schema`、`input_schema` 校验 required 字段、closed schema 字段和
+可判断的类型兼容性。
+
 ## Context Rules
 
 仅在 Node 明确允许 Reference 的字段上校验（Agent `task_template`、各可执行 Node

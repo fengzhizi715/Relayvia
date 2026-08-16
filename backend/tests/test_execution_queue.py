@@ -9,6 +9,7 @@ from app.domain.runs.models import NodeRun, WorkflowRun
 from app.domain.workflows.model import Workflow, WorkflowVersion
 from app.infrastructure.execution_backend.mysql import MySQLExecutionBackend
 from app.runtime.executor.base import NodeExecutionContext, NodeExecutionResult, NodeExecutor
+from app.runtime.executor.default import DefaultNodeExecutor
 from app.runtime.executor.result import ExecutionError
 from app.runtime.scheduler.workflow_scheduler import WorkflowScheduler, derive_workflow_state
 from app.runtime.state_machine import NodeRunStatus, WorkflowRunStatus
@@ -393,3 +394,187 @@ def test_worker_retry_exhausted_fails_run(client, http_test_server, memory_db):
     failed = [task for task in tasks if task["payload"].get("node_id") == "a"]
     assert failed and failed[0]["status"] == "failed"
     assert failed[0]["attempt"] == 3  # max_attempts
+
+
+def conditional_graph() -> dict:
+    return {
+        "schema_version": "1.0",
+        "nodes": [
+            {"id": "input", "type": "data", "subtype": "input", "name": "Input", "position": {"x": 0, "y": 0}, "config": {"schema": {"type": "object"}}, "input_mapping": {}, "metadata": {}},
+            {"id": "condition", "type": "logic", "subtype": "condition", "name": "Condition", "position": {"x": 100, "y": 0}, "config": {"expression": {"left": True, "operator": "==", "right": True}}, "input_mapping": {}, "metadata": {}},
+            {"id": "true_path", "type": "data", "subtype": "transform", "name": "True", "position": {"x": 200, "y": -80}, "config": {"mappings": {"branch": "true"}}, "input_mapping": {}, "metadata": {}},
+            {"id": "false_path", "type": "data", "subtype": "transform", "name": "False", "position": {"x": 200, "y": 80}, "config": {"mappings": {"branch": "false"}}, "input_mapping": {}, "metadata": {}},
+            {"id": "output", "type": "data", "subtype": "output", "name": "Output", "position": {"x": 300, "y": 0}, "config": {"output_mapping": {}}, "input_mapping": {}, "metadata": {}},
+        ],
+        "edges": [
+            {"id": "input-condition", "source": "input", "target": "condition", "source_handle": None, "target_handle": None, "label": None, "condition": None, "metadata": {}},
+            {"id": "condition-true", "source": "condition", "target": "true_path", "source_handle": "true", "target_handle": None, "label": None, "condition": None, "metadata": {}},
+            {"id": "condition-false", "source": "condition", "target": "false_path", "source_handle": "false", "target_handle": None, "label": None, "condition": None, "metadata": {}},
+            {"id": "true-output", "source": "true_path", "target": "output", "source_handle": None, "target_handle": None, "label": None, "condition": None, "metadata": {}},
+            {"id": "false-output", "source": "false_path", "target": "output", "source_handle": None, "target_handle": None, "label": None, "condition": None, "metadata": {}},
+        ],
+        "variables": {},
+        "metadata": {},
+    }
+
+
+def parallel_graph() -> dict:
+    graph = linear_graph("agent-1")
+    graph["nodes"] = [
+        graph["nodes"][0],
+        {"id": "parallel", "type": "logic", "subtype": "parallel", "name": "Parallel", "position": {"x": 80, "y": 0}, "config": {}, "input_mapping": {}, "metadata": {}},
+        graph["nodes"][1],
+        {"id": "b", "type": "agent", "subtype": "agent", "name": "B", "position": {"x": 180, "y": 80}, "config": {"agent_id": "agent-1"}, "input_mapping": {}, "metadata": {}},
+        graph["nodes"][2],
+    ]
+    graph["edges"] = [
+        {"id": "input-parallel", "source": "input", "target": "parallel", "source_handle": None, "target_handle": None, "label": None, "condition": None, "metadata": {}},
+        {"id": "parallel-a", "source": "parallel", "target": "a", "source_handle": None, "target_handle": None, "label": None, "condition": None, "metadata": {}},
+        {"id": "parallel-b", "source": "parallel", "target": "b", "source_handle": None, "target_handle": None, "label": None, "condition": None, "metadata": {}},
+        {"id": "a-output", "source": "a", "target": "output", "source_handle": None, "target_handle": None, "label": None, "condition": None, "metadata": {}},
+        {"id": "b-output", "source": "b", "target": "output", "source_handle": None, "target_handle": None, "label": None, "condition": None, "metadata": {}},
+    ]
+    return graph
+
+
+def test_condition_executes_only_selected_branch(memory_db):
+    _, factory = memory_db
+    with factory() as db:
+        run = make_run(db, conditional_graph())
+        run_id = run.id
+        scheduler = WorkflowScheduler(default_max_attempts=1)
+        scheduler.schedule_ready_nodes(db, run.id)
+        db.commit()
+
+    backend = make_backend(factory)
+
+    async def drive():
+        while task := await backend.claim("condition-worker"):
+            await _process_task(task, backend=backend, scheduler=scheduler, session_factory=factory, executor=DefaultNodeExecutor(factory), worker_id="condition-worker", renew_interval=60.0)
+
+    asyncio.run(drive())
+    with factory() as db:
+        node_runs = {item.node_id: item for item in db.scalars(select(NodeRun).where(NodeRun.workflow_run_id == run_id)).all()}
+        assert node_runs["condition"].output_json == {"selected_branch": "true", "matched": True}
+        assert node_runs["true_path"].status == NodeRunStatus.COMPLETED.value
+        assert node_runs["false_path"].status == NodeRunStatus.SKIPPED.value
+        assert node_runs["output"].status == NodeRunStatus.COMPLETED.value
+        task_node_ids = {task.payload_json["node_id"] for task in db.scalars(select(ExecutionTask).where(ExecutionTask.workflow_run_id == run_id)).all()}
+        assert "false_path" not in task_node_ids
+
+
+def test_paused_run_releases_claim_without_starting(client, http_test_server, memory_db):
+    agent = client.post("/api/agents", json={"name": "Pause Agent", "endpoint": f"{http_test_server}/agent"}).json()
+    workflow = client.post("/api/workflows", json={"name": "Pause Queue"}).json()
+    assert client.put(f"/api/workflows/{workflow['id']}/graph", json={"graph": linear_graph(agent["id"])}).status_code == 200
+    assert client.post(f"/api/workflows/{workflow['id']}/versions", json={}).status_code == 201
+    run_id = client.post(f"/api/workflows/{workflow['id']}/runs", json={}).json()["id"]
+    client.post(f"/api/workflow-runs/{run_id}/start")
+    _, factory = memory_db
+    backend = make_backend(factory)
+
+    async def assert_gate():
+        claimed = await backend.claim("paused-worker")
+        assert claimed is not None
+        assert client.post(f"/api/workflow-runs/{run_id}/pause").json()["status"] == "paused"
+        assert await backend.start(claimed.id, "paused-worker", claimed.lease_token) is False
+        assert await backend.claim("paused-worker") is None
+        assert client.post(f"/api/workflow-runs/{run_id}/resume").json()["status"] == "running"
+        resumed = await backend.claim("paused-worker")
+        assert resumed is not None
+
+    asyncio.run(assert_gate())
+
+
+def test_failed_parallel_run_cancels_queued_siblings(memory_db):
+    _, factory = memory_db
+    with factory() as db:
+        run = make_run(db, parallel_graph())
+        run_id = run.id
+        scheduler = WorkflowScheduler(default_max_attempts=1)
+        scheduler.schedule_ready_nodes(db, run.id)
+        db.commit()
+    backend = make_backend(factory)
+    executor = FakeExecutor(fail_forever={"a"})
+
+    async def drive_first_two():
+        first = await backend.claim("fail-fast-worker")
+        assert first is not None and first.payload["node_id"] == "parallel"
+        await _process_task(first, backend=backend, scheduler=scheduler, session_factory=factory, executor=executor, worker_id="fail-fast-worker", renew_interval=60.0)
+        failing = await backend.claim("fail-fast-worker")
+        assert failing is not None and failing.payload["node_id"] == "a"
+        await _process_task(failing, backend=backend, scheduler=scheduler, session_factory=factory, executor=executor, worker_id="fail-fast-worker", renew_interval=60.0)
+
+    asyncio.run(drive_first_two())
+    with factory() as db:
+        run_row = db.get(WorkflowRun, run_id)
+        assert run_row.status == WorkflowRunStatus.FAILED.value
+        statuses = {task.payload_json["node_id"]: task.status for task in db.scalars(select(ExecutionTask).where(ExecutionTask.workflow_run_id == run_id)).all()}
+        assert statuses["b"] == ExecutionTaskStatus.CANCELLED.value
+
+
+def test_default_executor_invokes_http_agent(client, http_test_server, memory_db):
+    agent = client.post("/api/agents", json={"name": "HTTP Executor Agent", "endpoint": f"{http_test_server}/agent"}).json()
+    workflow = client.post("/api/workflows", json={"name": "HTTP Executor"}).json()
+    assert client.put(f"/api/workflows/{workflow['id']}/graph", json={"graph": linear_graph(agent["id"])}).status_code == 200
+    assert client.post(f"/api/workflows/{workflow['id']}/versions", json={}).status_code == 201
+    run_id = client.post(f"/api/workflows/{workflow['id']}/runs", json={"input": {"requirement": "x"}}).json()["id"]
+    client.post(f"/api/workflow-runs/{run_id}/start")
+    _, factory = memory_db
+    backend, scheduler = make_backend(factory), WorkflowScheduler()
+
+    async def drive():
+        while task := await backend.claim("http-worker"):
+            await _process_task(task, backend=backend, scheduler=scheduler, session_factory=factory, executor=DefaultNodeExecutor(factory), worker_id="http-worker", renew_interval=60.0)
+
+    asyncio.run(drive())
+    detail = client.get(f"/api/workflow-runs/{run_id}").json()
+    planner = next(node for node in detail["node_runs"] if node["node_id"] == "a")
+    assert detail["status"] == "completed"
+    assert planner["output"] == {"ok": True}
+
+
+def test_default_executor_invokes_http_service_action(client, http_test_server, memory_db):
+    service = client.post("/api/services", json={"name": "HTTP Executor Service", "base_url": http_test_server}).json()
+    action = client.post(
+        f"/api/services/{service['id']}/actions",
+        json={
+            "name": "Train",
+            "method": "POST",
+            "path": "/training/{job_id}",
+            "path_schema": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
+            "input_schema": {"type": "object", "properties": {"dataset": {"type": "string"}}, "required": ["dataset"]},
+            "output_schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+        },
+    ).json()
+    graph = {
+        "schema_version": "1.0",
+        "nodes": [
+            {"id": "input", "type": "data", "subtype": "input", "name": "Input", "position": {"x": 0, "y": 0}, "config": {"schema": {"type": "object", "properties": {"job_id": {"type": "string"}, "dataset": {"type": "string"}}, "required": ["job_id", "dataset"]}}, "input_mapping": {}, "metadata": {}},
+            {"id": "service", "type": "service", "subtype": "http", "name": "Train", "position": {"x": 100, "y": 0}, "config": {"service_id": service["id"], "service_action_id": action["id"]}, "input_mapping": {"path": {"job_id": "{{workflow.input.job_id}}"}, "body": {"dataset": "{{workflow.input.dataset}}"}}, "metadata": {}},
+            {"id": "output", "type": "data", "subtype": "output", "name": "Output", "position": {"x": 200, "y": 0}, "config": {"output_mapping": {}}, "input_mapping": {}, "metadata": {}},
+        ],
+        "edges": [
+            {"id": "input-service", "source": "input", "target": "service", "source_handle": None, "target_handle": None, "label": None, "condition": None, "metadata": {}},
+            {"id": "service-output", "source": "service", "target": "output", "source_handle": None, "target_handle": None, "label": None, "condition": None, "metadata": {}},
+        ],
+        "variables": {},
+        "metadata": {},
+    }
+    workflow = client.post("/api/workflows", json={"name": "HTTP Service Executor"}).json()
+    assert client.put(f"/api/workflows/{workflow['id']}/graph", json={"graph": graph}).status_code == 200
+    assert client.post(f"/api/workflows/{workflow['id']}/versions", json={}).status_code == 201
+    run_id = client.post(f"/api/workflows/{workflow['id']}/runs", json={"input": {"job_id": "job 1", "dataset": "demo"}}).json()["id"]
+    client.post(f"/api/workflow-runs/{run_id}/start")
+    _, factory = memory_db
+    backend, scheduler = make_backend(factory), WorkflowScheduler()
+
+    async def drive():
+        while task := await backend.claim("service-worker"):
+            await _process_task(task, backend=backend, scheduler=scheduler, session_factory=factory, executor=DefaultNodeExecutor(factory), worker_id="service-worker", renew_interval=60.0)
+
+    asyncio.run(drive())
+    detail = client.get(f"/api/workflow-runs/{run_id}").json()
+    service_node = next(node for node in detail["node_runs"] if node["node_id"] == "service")
+    assert detail["status"] == "completed"
+    assert service_node["output"] == {"ok": True}

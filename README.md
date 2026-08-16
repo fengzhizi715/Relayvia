@@ -2,7 +2,7 @@
 
 Relayvia 是一个连接、编排、执行和追踪已有 Agent 与 Service 的平台。
 
-当前实现到 Phase 7：Agent/Service Registry、Credential Reference、HTTP Connection Test、Workflow Graph 1.0、不可变 Workflow Version、可视化 Workflow Builder、Validation Engine、Workflow Run / Node Run + Runtime State Machine，以及 **MySQL-backed Execution Queue + Scheduler + 独立 Worker**（`FOR UPDATE SKIP LOCKED` 安全 Claim、Lease + Token Fencing、Retry/Backoff、崩溃恢复、at-least-once）。
+当前实现到 Phase 7：Agent/Service Registry、Credential Reference、HTTP Connection Test、Workflow Graph 1.0、不可变 Workflow Version、可视化 Workflow Builder、Validation Engine、Workflow Run / Node Run + Runtime State Machine，以及 **MySQL-backed Execution Queue + Scheduler + 独立 Worker**（`FOR UPDATE SKIP LOCKED` 安全 Claim、Lease + Token Fencing、Retry/Backoff、崩溃恢复、at-least-once）。Worker 默认可执行 HTTP Agent、HTTP Service Action、Condition 与 Data/Parallel/Merge 基础节点；Condition 只执行选中分支，Pause 不会启动新任务，Node 失败采用 fail-fast 取消未完成同 Run 任务。
 
 Execution Queue 文档：[`docs/execution-queue-worker.md`](docs/execution-queue-worker.md)
 Runtime 状态机文档：[`docs/workflow-runtime-state-machine.md`](docs/workflow-runtime-state-machine.md)

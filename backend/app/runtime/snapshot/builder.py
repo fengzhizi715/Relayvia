@@ -11,7 +11,7 @@ read, decrypted or persisted here.
 from dataclasses import dataclass, field
 from typing import Any
 
-EXECUTION_SNAPSHOT_VERSION = "1"
+EXECUTION_SNAPSHOT_VERSION = "2"
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,8 @@ class SnapshotAgent:
     name: str
     connector_type: str
     endpoint: str | None = None
+    http_method: str = "POST"
+    headers: dict[str, str] = field(default_factory=dict)
     health_check_url: str | None = None
     timeout_seconds: int | None = None
     input_schema: dict[str, Any] = field(default_factory=dict)
@@ -43,6 +45,9 @@ class SnapshotServiceAction:
     name: str
     method: str
     path: str
+    headers: dict[str, str] = field(default_factory=dict)
+    query_schema: dict[str, Any] = field(default_factory=dict)
+    path_schema: dict[str, Any] = field(default_factory=dict)
     timeout_seconds: int | None = None
     retry_policy: dict[str, Any] = field(default_factory=dict)
     input_schema: dict[str, Any] = field(default_factory=dict)
@@ -69,6 +74,8 @@ def _agent(agent: SnapshotAgent) -> dict[str, Any]:
         "name": agent.name,
         "connector_type": agent.connector_type,
         "endpoint": agent.endpoint,
+        "http_method": agent.http_method,
+        "headers": agent.headers,
         "health_check_url": agent.health_check_url,
         "timeout_seconds": agent.timeout_seconds,
         "input_schema": agent.input_schema,
@@ -92,6 +99,9 @@ def _action(action: SnapshotServiceAction) -> dict[str, Any]:
         "name": action.name,
         "method": action.method,
         "path": action.path,
+        "headers": action.headers,
+        "query_schema": action.query_schema,
+        "path_schema": action.path_schema,
         "timeout_seconds": action.timeout_seconds,
         "retry_policy": action.retry_policy,
         "input_schema": action.input_schema,

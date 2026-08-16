@@ -1,1 +1,5 @@
-"""Node execution boundary (Phase 7: interface only)."""
+"""Node execution boundary and default V1 Execution Units."""
+
+from .default import DefaultNodeExecutor
+
+__all__ = ["DefaultNodeExecutor"]
