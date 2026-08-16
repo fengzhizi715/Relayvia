@@ -28,11 +28,11 @@ def _referenced_ids(graph: WorkflowGraph) -> tuple[set[str], set[str], set[str]]
     service_ids: set[str] = set()
     action_ids: set[str] = set()
     for node in graph.nodes:
-        if node.type == NodeType.AGENT:
+        if node.type is NodeType.AGENT:
             agent_id = node.config.get("agent_id")
             if agent_id:
                 agent_ids.add(agent_id)
-        elif node.type == NodeType.SERVICE:
+        elif node.type is NodeType.SERVICE:
             service_id = node.config.get("service_id")
             action_id = node.config.get("service_action_id")
             if service_id:
@@ -40,6 +40,9 @@ def _referenced_ids(graph: WorkflowGraph) -> tuple[set[str], set[str], set[str]]
             if action_id:
                 action_ids.add(action_id)
     return agent_ids, service_ids, action_ids
+
+
+referenced_registry_ids = _referenced_ids
 
 
 def build_validation_context(db: Session, graph: WorkflowGraph) -> ValidationContext:

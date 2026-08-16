@@ -5,6 +5,7 @@ import { useAppStore, type AppSection } from "./app/store/useAppStore";
 import { StatusBadge } from "./components/StatusBadge";
 import { AgentsPage } from "./features/agents/AgentsPage";
 import { CredentialsPage } from "./features/credentials/CredentialsPage";
+import { RunsPage } from "./features/runs/RunsPage";
 import { ServicesPage } from "./features/services/ServicesPage";
 import { WorkflowsPage } from "./features/workflows/WorkflowsPage";
 import { useWorkflowBuilderStore } from "./workflow/store/workflowBuilderStore";
@@ -76,7 +77,7 @@ export default function App() {
           />
         </header>
 
-        {activeSection === "agents" ? <AgentsPage /> : activeSection === "services" ? <ServicesPage /> : activeSection === "credentials" ? <CredentialsPage /> : activeSection === "workflows" ? <WorkflowsPage /> : activeSection !== "overview" ? <div className="coming-soon"><p className="eyebrow">PHASE 3 BOUNDARY</p><h3>{activeSection[0].toUpperCase() + activeSection.slice(1)} is queued for a later phase.</h3><p>Workflow Graph is versioned and validated. Runtime, Runs, and Runner execution will arrive in their dedicated phases.</p></div> : <>
+        {activeSection === "agents" ? <AgentsPage /> : activeSection === "services" ? <ServicesPage /> : activeSection === "credentials" ? <CredentialsPage /> : activeSection === "workflows" ? <WorkflowsPage /> : activeSection === "runs" ? <RunsPage /> : activeSection !== "overview" ? <div className="coming-soon"><p className="eyebrow">PHASE 6 BOUNDARY</p><h3>{activeSection[0].toUpperCase() + activeSection.slice(1)} is queued for a later phase.</h3><p>Runs, Runners and execution infrastructure arrive in their dedicated phases.</p></div> : <>
         <section className="hero-card">
           <div>
             <p className="eyebrow">FOUNDATION READY</p>

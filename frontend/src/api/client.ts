@@ -227,6 +227,72 @@ export type ValidationResult = {
   warnings: ValidationIssue[];
 };
 
+export type WorkflowRunStatus = "created" | "running" | "waiting" | "paused" | "completed" | "failed" | "cancelled";
+export type NodeRunStatus = "pending" | "queued" | "running" | "waiting" | "retrying" | "completed" | "failed" | "skipped" | "cancelled";
+
+export type NodeRun = {
+  id: string;
+  workflow_run_id: string;
+  node_id: string;
+  node_type: string;
+  node_subtype: string;
+  node_name_snapshot: string;
+  status: NodeRunStatus;
+  input: Record<string, unknown>;
+  output: Record<string, unknown> | null;
+  error: Record<string, unknown> | null;
+  attempt: number;
+  waiting_reason: string | null;
+  waiting_metadata: Record<string, unknown>;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorkflowRunSummary = {
+  id: string;
+  workflow_id: string;
+  workflow_name: string | null;
+  workflow_version_id: string;
+  version: number;
+  status: WorkflowRunStatus;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorkflowRun = {
+  id: string;
+  workflow_id: string;
+  workflow_name: string | null;
+  workflow_version_id: string;
+  version: number;
+  status: WorkflowRunStatus;
+  graph_schema_version: string;
+  graph_snapshot: WorkflowGraph;
+  execution_snapshot: Record<string, unknown>;
+  input: Record<string, unknown>;
+  variables: Record<string, unknown>;
+  error: Record<string, unknown> | null;
+  waiting_reason: string | null;
+  waiting_metadata: Record<string, unknown>;
+  started_at: string | null;
+  finished_at: string | null;
+  paused_at: string | null;
+  cancelled_at: string | null;
+  created_at: string;
+  updated_at: string;
+  node_runs: NodeRun[];
+};
+
+export type WorkflowRunPayload = {
+  workflow_version_id?: string;
+  version?: number;
+  input?: Record<string, unknown>;
+};
+
 export class ApiError extends Error {
   code: string;
   details: Record<string, unknown>;
@@ -288,3 +354,19 @@ export const getWorkflowVersions = (id: string) => request<WorkflowVersion[]>(`/
 export const createWorkflowVersion = (id: string, changeNote?: string) => request<WorkflowVersion>(`/api/workflows/${id}/versions`, { method: "POST", body: JSON.stringify({ change_note: changeNote }) });
 export const getWorkflowVersion = (id: string, version: number) => request<WorkflowVersion>(`/api/workflows/${id}/versions/${version}`);
 export const validateWorkflow = (id: string, graph?: WorkflowGraph) => request<ValidationResult>(`/api/workflows/${id}/validate`, { method: "POST", body: JSON.stringify(graph ? { graph } : {}) });
+
+export const getRuns = (params?: { workflowId?: string; status?: WorkflowRunStatus }) => {
+  const query = new URLSearchParams();
+  if (params?.workflowId) query.set("workflow_id", params.workflowId);
+  if (params?.status) query.set("status", params.status);
+  const qs = query.toString();
+  return request<WorkflowRunSummary[]>(`/api/workflow-runs${qs ? `?${qs}` : ""}`);
+};
+export const createWorkflowRun = (workflowId: string, payload: WorkflowRunPayload) => request<WorkflowRun>(`/api/workflows/${workflowId}/runs`, { method: "POST", body: JSON.stringify(payload) });
+export const getWorkflowRun = (id: string) => request<WorkflowRun>(`/api/workflow-runs/${id}`);
+export const startWorkflowRun = (id: string) => request<WorkflowRun>(`/api/workflow-runs/${id}/start`, { method: "POST" });
+export const pauseWorkflowRun = (id: string) => request<WorkflowRun>(`/api/workflow-runs/${id}/pause`, { method: "POST" });
+export const resumeWorkflowRun = (id: string) => request<WorkflowRun>(`/api/workflow-runs/${id}/resume`, { method: "POST" });
+export const cancelWorkflowRun = (id: string) => request<WorkflowRun>(`/api/workflow-runs/${id}/cancel`, { method: "POST" });
+export const getNodeRuns = (runId: string) => request<NodeRun[]>(`/api/workflow-runs/${runId}/nodes`);
+export const getNodeRun = (runId: string, nodeRunId: string) => request<NodeRun>(`/api/workflow-runs/${runId}/nodes/${nodeRunId}`);

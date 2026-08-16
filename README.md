@@ -2,8 +2,9 @@
 
 Relayvia 是一个连接、编排、执行和追踪已有 Agent 与 Service 的平台。
 
-当前实现到 Phase 5：Agent/Service Registry、Credential Reference、HTTP Connection Test、Workflow Graph 1.0、不可变 Workflow Version、基于 React Flow 的**可视化 Workflow Builder**，以及后端权威的 **Workflow Graph Validation Engine**（拓扑 / Registry / Node / Context / Schema 校验，Version 创建前强制 Full Validation）。
+当前实现到 Phase 6：Agent/Service Registry、Credential Reference、HTTP Connection Test、Workflow Graph 1.0、不可变 Workflow Version、可视化 Workflow Builder、后端权威 Validation Engine，以及 **Workflow Run / Node Run + Runtime State Machine**（不可变 Version → Run Snapshot + Execution Snapshot、Start/Pause/Resume/Cancel、Run 与 Node Run 查询、Runs 页面与只读 Runtime Graph）。
 
+Runtime 状态机文档：[`docs/workflow-runtime-state-machine.md`](docs/workflow-runtime-state-machine.md)
 Validation 文档：[`docs/workflow-validation.md`](docs/workflow-validation.md)
 
 ## 本地开发
@@ -110,6 +111,16 @@ GET|PUT /api/workflows/{id}/graph
 POST /api/workflows/{id}/validate
 GET|POST /api/workflows/{id}/versions
 GET /api/workflows/{id}/versions/{version}
+POST /api/workflows/{id}/runs
+
+GET /api/workflow-runs
+GET /api/workflow-runs/{id}
+POST /api/workflow-runs/{id}/start
+POST /api/workflow-runs/{id}/pause
+POST /api/workflow-runs/{id}/resume
+POST /api/workflow-runs/{id}/cancel
+GET /api/workflow-runs/{id}/nodes
+GET /api/workflow-runs/{id}/nodes/{node_run_id}
 
 Workflow Graph Contract 文档：[`docs/workflow-graph-contract.md`](docs/workflow-graph-contract.md)
 

@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core.config import get_settings  # noqa: E402
 from app.domain.agents.model import Agent  # noqa: F401,E402
 from app.domain.credentials.model import Credential  # noqa: F401,E402
+from app.domain.runs.models import NodeRun, WorkflowRun  # noqa: F401,E402
 from app.domain.services.model import Service, ServiceAction  # noqa: F401,E402
 from app.domain.workflows.model import Workflow, WorkflowVersion  # noqa: F401,E402
 from app.infrastructure.database.base import Base  # noqa: E402
