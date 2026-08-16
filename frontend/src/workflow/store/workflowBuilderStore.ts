@@ -1,12 +1,18 @@
 import { create } from "zustand";
 
-import type { WorkflowEdge, WorkflowGraph, WorkflowNode } from "../../api/client";
+import type { ValidationResult, WorkflowEdge, WorkflowGraph, WorkflowNode } from "../../api/client";
 import { createWorkflowNode, generateEdgeId } from "../factories/nodeFactory";
 
 export type BuilderMode = { kind: "draft" } | { kind: "version"; version: number; changeNote: string | null };
 
 export type WorkflowNodePatch = Partial<Pick<WorkflowNode, "name" | "config" | "input_mapping" | "metadata">>;
 export type WorkflowEdgePatch = Partial<Pick<WorkflowEdge, "label" | "source" | "target" | "source_handle" | "target_handle">>;
+
+export type ValidationState = {
+  valid: boolean;
+  issues: Array<{ code: string; severity: "error" | "warning"; message: string; node_id: string | null; edge_id: string | null; field: string | null; details: Record<string, unknown> }>;
+  validatedAt: string;
+};
 
 type WorkflowBuilderState = {
   workflowId: string | null;
@@ -24,6 +30,10 @@ type WorkflowBuilderState = {
   saveError: string | null;
   lastSavedAt: string | null;
 
+  validation: ValidationState | null;
+  isValidating: boolean;
+  validationStale: boolean;
+
   initialize: (params: {
     workflowId: string;
     workflowName: string;
@@ -37,6 +47,10 @@ type WorkflowBuilderState = {
   markSaved: (updatedAt: string) => void;
   setSaving: (saving: boolean) => void;
   setSaveError: (error: string | null) => void;
+
+  setValidation: (result: ValidationResult, validatedAt: string) => void;
+  setValidating: (validating: boolean) => void;
+  markValidationStale: () => void;
 
   addNode: (type: WorkflowNode["type"], subtype: string, position: { x: number; y: number }) => string;
   updateNode: (id: string, patch: WorkflowNodePatch) => void;
@@ -64,6 +78,9 @@ const EMPTY_STATE = {
   isSaving: false,
   saveError: null,
   lastSavedAt: null,
+  validation: null,
+  isValidating: false,
+  validationStale: true,
 };
 
 function replaceNode(graph: WorkflowGraph, id: string, updater: (node: WorkflowNode) => WorkflowNode): WorkflowGraph {
@@ -91,6 +108,9 @@ export const useWorkflowBuilderStore = create<WorkflowBuilderState>((set, get) =
       isSaving: false,
       saveError: null,
       lastSavedAt: null,
+      validation: null,
+      isValidating: false,
+      validationStale: true,
     })),
 
   reset: () => set(() => ({ ...EMPTY_STATE })),
@@ -103,6 +123,29 @@ export const useWorkflowBuilderStore = create<WorkflowBuilderState>((set, get) =
 
   setSaveError: (saveError) => set(() => ({ saveError, isSaving: false })),
 
+  setValidation: (result, validatedAt) =>
+    set(() => ({
+      validation: {
+        valid: result.valid,
+        issues: [...result.errors, ...result.warnings].map((issue) => ({
+          code: issue.code,
+          severity: issue.severity,
+          message: issue.message,
+          node_id: issue.node_id,
+          edge_id: issue.edge_id,
+          field: issue.field,
+          details: issue.details,
+        })),
+        validatedAt,
+      },
+      validationStale: false,
+      isValidating: false,
+    })),
+
+  setValidating: (isValidating) => set(() => ({ isValidating })),
+
+  markValidationStale: () => set(() => ({ validationStale: true })),
+
   addNode: (type, subtype, position) => {
     const node = createWorkflowNode(type, subtype, position);
     set((state) => {
@@ -111,6 +154,7 @@ export const useWorkflowBuilderStore = create<WorkflowBuilderState>((set, get) =
         graph: { ...state.graph, nodes: [...state.graph.nodes, node] },
         isDirty: true,
         saveError: null,
+        validationStale: true,
         selectedNodeId: node.id,
         selectedEdgeId: null,
       };
@@ -125,6 +169,7 @@ export const useWorkflowBuilderStore = create<WorkflowBuilderState>((set, get) =
         graph: replaceNode(state.graph, id, (node) => ({ ...node, ...patch })),
         isDirty: true,
         saveError: null,
+        validationStale: true,
       };
     }),
 
@@ -140,6 +185,7 @@ export const useWorkflowBuilderStore = create<WorkflowBuilderState>((set, get) =
         graph,
         isDirty: true,
         saveError: null,
+        validationStale: true,
         selectedNodeId: state.selectedNodeId === id ? null : state.selectedNodeId,
         selectedEdgeId: state.selectedEdgeId && graph.edges.some((edge) => edge.id === state.selectedEdgeId) ? state.selectedEdgeId : null,
       };
@@ -179,6 +225,7 @@ export const useWorkflowBuilderStore = create<WorkflowBuilderState>((set, get) =
         graph: { ...state.graph, edges: [...state.graph.edges, edge] },
         isDirty: true,
         saveError: null,
+        validationStale: true,
         selectedNodeId: null,
         selectedEdgeId: edge.id,
       };
@@ -191,6 +238,7 @@ export const useWorkflowBuilderStore = create<WorkflowBuilderState>((set, get) =
         graph: replaceEdge(state.graph, id, (edge) => ({ ...edge, ...patch })),
         isDirty: true,
         saveError: null,
+        validationStale: true,
       };
     }),
 
@@ -201,6 +249,7 @@ export const useWorkflowBuilderStore = create<WorkflowBuilderState>((set, get) =
         graph: { ...state.graph, edges: state.graph.edges.filter((edge) => edge.id !== id) },
         isDirty: true,
         saveError: null,
+        validationStale: true,
         selectedEdgeId: state.selectedEdgeId === id ? null : state.selectedEdgeId,
       };
     }),

@@ -1,7 +1,7 @@
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import type { WorkflowNode } from "../../api/client";
-import { useWorkflowNode } from "../store/workflowBuilderStore";
+import { useWorkflowBuilderStore, useWorkflowNode } from "../store/workflowBuilderStore";
 import type { WorkflowReactFlowNodeData } from "../adapters/graphToReactFlow";
 
 type BaseWorkflowNodeProps = {
@@ -14,10 +14,34 @@ type BaseWorkflowNodeProps = {
 };
 
 export function BaseWorkflowNode({ node, category, glyph, tone = category.toLowerCase(), summary, warning }: BaseWorkflowNodeProps) {
+  const validation = useWorkflowBuilderStore((state) => state.validation);
+  const backend = useMemo(() => {
+    if (!validation) return { errors: [] as string[], warnings: [] as string[] };
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    for (const issue of validation.issues) {
+      if (issue.node_id !== node.id) continue;
+      if (issue.severity === "error") errors.push(issue.message);
+      else warnings.push(issue.message);
+    }
+    return { errors, warnings };
+  }, [validation, node.id]);
+
+  const errorBadge = backend.errors[0] ?? null;
+  const warningBadge = !errorBadge && backend.warnings.length > 0 ? backend.warnings[0] : null;
+
   return (
     <div className={`workflow-node workflow-node--${tone}`}>
-      {warning ? (
-        <div className="workflow-node-warning" title={warning} role="status">
+      {errorBadge ? (
+        <div className="workflow-node-warning" title={backend.errors.join("\n")} role="status">
+          ⚠ {errorBadge}
+        </div>
+      ) : warningBadge ? (
+        <div className="workflow-node-warning workflow-node-warning--amber" title={backend.warnings.join("\n")} role="status">
+          ⚠ {warningBadge}
+        </div>
+      ) : warning ? (
+        <div className="workflow-node-warning workflow-node-warning--amber" title={warning} role="status">
           ⚠ {warning}
         </div>
       ) : null}

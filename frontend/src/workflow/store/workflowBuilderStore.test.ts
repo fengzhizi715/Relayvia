@@ -118,4 +118,26 @@ describe("Workflow builder store", () => {
     expect(after.graph!.nodes[0].name).toBe(before);
     expect(after.isDirty).toBe(false);
   });
+
+  it("tracks backend validation results and staleness", () => {
+    const id = useWorkflowBuilderStore.getState().addNode("data", "input", { x: 0, y: 0 });
+    useWorkflowBuilderStore.getState().setValidation(
+      {
+        valid: false,
+        errors: [{ code: "X", severity: "error", message: "boom", node_id: id, edge_id: null, field: null, details: {} }],
+        warnings: [],
+      },
+      "2026-08-15T00:00:00Z",
+    );
+    let state = useWorkflowBuilderStore.getState();
+    expect(state.validationStale).toBe(false);
+    expect(state.validation?.valid).toBe(false);
+    expect(state.validation?.issues).toHaveLength(1);
+
+    state.moveNode(id, { x: 10, y: 10 });
+    expect(useWorkflowBuilderStore.getState().validationStale).toBe(false);
+
+    state.updateNode(id, { name: "Renamed" });
+    expect(useWorkflowBuilderStore.getState().validationStale).toBe(true);
+  });
 });

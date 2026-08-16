@@ -2,7 +2,9 @@
 
 Relayvia 是一个连接、编排、执行和追踪已有 Agent 与 Service 的平台。
 
-当前实现到 Phase 4：Agent/Service Registry、Credential Reference、HTTP Connection Test、Workflow Graph 1.0、不可变 Workflow Version，以及基于 React Flow 的**可视化 Workflow Builder**（Node Palette、Canvas 编辑、Node/Edge Inspector、Input Mapping、Draft 保存 / 恢复、只读 Version 画布）。
+当前实现到 Phase 5：Agent/Service Registry、Credential Reference、HTTP Connection Test、Workflow Graph 1.0、不可变 Workflow Version、基于 React Flow 的**可视化 Workflow Builder**，以及后端权威的 **Workflow Graph Validation Engine**（拓扑 / Registry / Node / Context / Schema 校验，Version 创建前强制 Full Validation）。
+
+Validation 文档：[`docs/workflow-validation.md`](docs/workflow-validation.md)
 
 ## 本地开发
 
@@ -105,6 +107,7 @@ PUT|DELETE /api/credentials/{id}
 GET|POST /api/workflows
 GET|PUT|DELETE /api/workflows/{id}
 GET|PUT /api/workflows/{id}/graph
+POST /api/workflows/{id}/validate
 GET|POST /api/workflows/{id}/versions
 GET /api/workflows/{id}/versions/{version}
 

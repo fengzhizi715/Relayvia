@@ -49,6 +49,18 @@ def graph_payload(agent_id: str, service_id: str | None = None, action_id: str |
                 "metadata": {},
             }
         )
+    nodes.append(
+        {
+            "id": "output",
+            "type": "data",
+            "subtype": "output",
+            "name": "Output",
+            "position": {"x": 900, "y": 100},
+            "config": {"output_mapping": {"result": "{{nodes.planner.output.result}}"}},
+            "input_mapping": {},
+            "metadata": {},
+        }
+    )
     edges = [
         {
             "id": "edge-input-planner",
@@ -67,6 +79,31 @@ def graph_payload(agent_id: str, service_id: str | None = None, action_id: str |
                 "id": "edge-planner-service",
                 "source": "planner",
                 "target": "service-call",
+                "source_handle": None,
+                "target_handle": None,
+                "label": None,
+                "condition": None,
+                "metadata": {},
+            }
+        )
+        edges.append(
+            {
+                "id": "edge-service-output",
+                "source": "service-call",
+                "target": "output",
+                "source_handle": None,
+                "target_handle": None,
+                "label": None,
+                "condition": None,
+                "metadata": {},
+            }
+        )
+    else:
+        edges.append(
+            {
+                "id": "edge-planner-output",
+                "source": "planner",
+                "target": "output",
                 "source_handle": None,
                 "target_handle": None,
                 "label": None,

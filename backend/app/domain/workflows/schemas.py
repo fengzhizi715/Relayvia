@@ -37,6 +37,10 @@ class WorkflowGraphUpdate(BaseModel):
     graph: dict[str, Any]
 
 
+class WorkflowValidateRequest(BaseModel):
+    graph: dict[str, Any] | None = None
+
+
 class GraphWarning(BaseModel):
     code: str
     message: str

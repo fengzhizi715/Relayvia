@@ -9,6 +9,8 @@ import {
   getWorkflowGraph,
   getWorkflowVersion,
   updateWorkflowGraph,
+  validateWorkflow,
+  type ValidationResult,
 } from "../../api/client";
 import { Modal } from "../../components/Modal";
 import { NodeInspector } from "../inspector/NodeInspector";
@@ -16,8 +18,17 @@ import { useAgents, useServiceActionsForServices, useServices } from "../registr
 import { useWorkflowBuilderStore } from "../store/workflowBuilderStore";
 import { edgeIssues, nodeIssues, type NodeIssue } from "../validation/localValidation";
 import { NodePalette } from "./NodePalette";
+import { ValidationPanel } from "./ValidationPanel";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { WorkflowToolbar } from "./WorkflowToolbar";
+
+class ValidationBlockedError extends Error {
+  result: ValidationResult;
+  constructor(result: ValidationResult) {
+    super("Workflow does not pass validation");
+    this.result = result;
+  }
+}
 
 type WorkflowBuilderPageProps = {
   workflowId: string;
@@ -62,6 +73,10 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
   const [changeNote, setChangeNote] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [dismissedWarnings, setDismissedWarnings] = useState(false);
+  const [validationPanelOpen, setValidationPanelOpen] = useState(false);
+
+  const setValidation = useWorkflowBuilderStore((state) => state.setValidation);
+  const setValidating = useWorkflowBuilderStore((state) => state.setValidating);
 
   const modeKind = readOnly ? "version" : "draft";
   const versionNumber = version ?? null;
@@ -128,12 +143,30 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
     return () => clearTimeout(timer);
   }, [isDirty, canSave, saveError, readOnly, save]);
 
+  const validateMutation = useMutation({
+    mutationFn: () => validateWorkflow(workflowId, graph ?? undefined),
+    onSuccess: (result) => setValidation(result, new Date().toISOString()),
+    onSettled: () => setValidating(false),
+    onError: (value) => setNotice(value instanceof ApiError ? `Validation failed: ${value.message}` : "Validation failed"),
+  });
+
+  function onValidate() {
+    if (!graph) return;
+    setValidating(true);
+    setValidationPanelOpen(true);
+    validateMutation.mutate();
+  }
+
   const versionMutation = useMutation({
     mutationFn: async (note: string | undefined) => {
       if (isDirty && canSave && graph) {
         await updateWorkflowGraph(workflowId, graph);
         markSaved(new Date().toISOString());
         void queryClient.invalidateQueries({ queryKey: ["workflow-graph", workflowId] });
+      }
+      const validationResult = await validateWorkflow(workflowId, graph ?? undefined);
+      if (!validationResult.valid) {
+        throw new ValidationBlockedError(validationResult);
       }
       return createWorkflowVersion(workflowId, note || undefined);
     },
@@ -143,7 +176,15 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
       void queryClient.invalidateQueries({ queryKey: ["workflows"] });
       void queryClient.invalidateQueries({ queryKey: ["workflow-versions", workflowId] });
     },
-    onError: (value) => setNotice(value instanceof ApiError ? `${value.message} (${value.code})` : "Version creation failed"),
+    onError: (value) => {
+      if (value instanceof ValidationBlockedError) {
+        setValidation(value.result, new Date().toISOString());
+        setValidationPanelOpen(true);
+        setNotice("Fix validation errors before creating a Version.");
+      } else {
+        setNotice(value instanceof ApiError ? `${value.message} (${value.code})` : "Version creation failed");
+      }
+    },
   });
 
   function onCreateVersion() {
@@ -197,6 +238,7 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
           onBack={handleBack}
           onSave={save}
           onCreateVersion={onCreateVersion}
+          onValidate={onValidate}
           canSave={canSave}
           blockedReasons={blockingErrors.map((issue) => issue.message)}
         />
@@ -210,6 +252,7 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
             {warnings.map((warning) => warning.message).join(" · ")} · dismiss
           </button>
         )}
+        {!readOnly && validationPanelOpen && <ValidationPanel onClose={() => setValidationPanelOpen(false)} />}
         <div className="builder-body">
           <NodePalette />
           <WorkflowCanvas />

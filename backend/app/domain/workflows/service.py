@@ -21,6 +21,7 @@ from app.domain.workflows.schemas import (
     WorkflowUpdate,
     WorkflowVersionRead,
 )
+from app.domain.workflows.validation_service import validate_graph_with_context
 
 
 def _get_workflow(db: Session, workflow_id: str, *, lock: bool = False) -> Workflow:
@@ -197,6 +198,14 @@ def create_version(db: Session, workflow_id: str, change_note: str | None = None
     workflow = _get_workflow(db, workflow_id, lock=True)
     graph = _graph_from_json(workflow.draft_graph_json)
     _validate_registry_references(db, graph)
+    validation = validate_graph_with_context(db, graph)
+    if not validation.valid:
+        raise RelayviaError(
+            "VALIDATION_FAILED",
+            "Workflow definition does not pass validation; fix errors before creating a Version",
+            status_code=422,
+            details={"errors": [issue.model_dump() for issue in validation.errors]},
+        )
     current_max = db.scalar(select(func.max(WorkflowVersion.version)).where(WorkflowVersion.workflow_id == workflow.id)) or 0
     version_number = max(current_max, workflow.current_version or 0) + 1
     snapshot = _graph_json(graph)

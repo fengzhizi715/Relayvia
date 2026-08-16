@@ -7,6 +7,7 @@ from app.domain.workflows.schemas import (
     WorkflowGraphUpdate,
     WorkflowRead,
     WorkflowUpdate,
+    WorkflowValidateRequest,
     WorkflowVersionCreate,
     WorkflowVersionRead,
 )
@@ -22,7 +23,9 @@ from app.domain.workflows.service import (
     update_draft_graph,
     update_workflow,
 )
+from app.domain.workflows.validation_service import validate_draft_graph
 from app.infrastructure.database.session import get_db
+from app.runtime.validation import ValidationResult
 
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -83,6 +86,20 @@ def post_workflow_version(
     db: Session = Depends(get_db),
 ) -> WorkflowVersionRead:
     return create_version(db, workflow_id, payload.change_note if payload else None)
+
+
+@router.post("/{workflow_id}/validate", response_model=ValidationResult)
+def post_workflow_validate(
+    workflow_id: str,
+    payload: WorkflowValidateRequest | None = None,
+    db: Session = Depends(get_db),
+) -> ValidationResult:
+    """Validate the current Draft, or the supplied (unsaved) Graph.
+
+    With an empty body, validates the persisted Draft. With a `graph` body,
+    validates that exact Graph without requiring a save first.
+    """
+    return validate_draft_graph(db, workflow_id, raw_graph=payload.graph if payload else None)
 
 
 @router.get("/{workflow_id}/versions/{version}", response_model=WorkflowVersionRead)

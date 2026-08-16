@@ -211,6 +211,22 @@ export type WorkflowVersion = {
   created_at: string;
 };
 
+export type ValidationIssue = {
+  code: string;
+  severity: "error" | "warning";
+  message: string;
+  node_id: string | null;
+  edge_id: string | null;
+  field: string | null;
+  details: Record<string, unknown>;
+};
+
+export type ValidationResult = {
+  valid: boolean;
+  errors: ValidationIssue[];
+  warnings: ValidationIssue[];
+};
+
 export class ApiError extends Error {
   code: string;
   details: Record<string, unknown>;
@@ -271,3 +287,4 @@ export const updateWorkflowGraph = (id: string, graph: WorkflowGraph) => request
 export const getWorkflowVersions = (id: string) => request<WorkflowVersion[]>(`/api/workflows/${id}/versions`);
 export const createWorkflowVersion = (id: string, changeNote?: string) => request<WorkflowVersion>(`/api/workflows/${id}/versions`, { method: "POST", body: JSON.stringify({ change_note: changeNote }) });
 export const getWorkflowVersion = (id: string, version: number) => request<WorkflowVersion>(`/api/workflows/${id}/versions/${version}`);
+export const validateWorkflow = (id: string, graph?: WorkflowGraph) => request<ValidationResult>(`/api/workflows/${id}/validate`, { method: "POST", body: JSON.stringify(graph ? { graph } : {}) });

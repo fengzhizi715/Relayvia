@@ -13,6 +13,7 @@ const api = vi.hoisted(() => ({
   getWorkflowVersion: vi.fn(),
   updateWorkflowGraph: vi.fn(),
   createWorkflowVersion: vi.fn(),
+  validateWorkflow: vi.fn(),
   getAgents: vi.fn(),
   getServices: vi.fn(),
   getActions: vi.fn(),
@@ -84,6 +85,7 @@ describe("WorkflowBuilderPage", () => {
     api.getActions.mockResolvedValue([]);
     api.updateWorkflowGraph.mockResolvedValue({ workflow_id: "workflow-1", schema_version: "1.0", graph, warnings: [], updated_at: workflow.updated_at });
     api.createWorkflowVersion.mockResolvedValue({ id: "version-1", workflow_id: "workflow-1", version: 1, graph_schema_version: "1.0", graph, change_note: "first", created_at: workflow.updated_at });
+    api.validateWorkflow.mockResolvedValue({ valid: true, errors: [], warnings: [] });
   });
 
   afterEach(() => cleanup());
@@ -142,5 +144,62 @@ describe("WorkflowBuilderPage", () => {
     expect(await screen.findByText("READ ONLY")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save Draft" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Create Version" })).not.toBeInTheDocument();
+  });
+
+  it("runs backend validation and renders issues in the panel", async () => {
+    const user = userEvent.setup();
+    api.validateWorkflow.mockResolvedValue({
+      valid: false,
+      errors: [{ code: "MISSING_OUTPUT_NODE", severity: "error", message: "Workflow requires at least one Data Output node", node_id: null, edge_id: null, field: "nodes[]", details: {} }],
+      warnings: [{ code: "AGENT_UNHEALTHY", severity: "warning", message: "Agent is currently unhealthy", node_id: "planner", edge_id: null, field: "config.agent_id", details: {} }],
+    });
+    renderBuilder();
+    await screen.findByText("Coding Showcase");
+    await user.click(screen.getByRole("button", { name: "Validate" }));
+    expect(await screen.findByText("Workflow requires at least one Data Output node")).toBeInTheDocument();
+    expect(screen.getByText("Agent is currently unhealthy")).toBeInTheDocument();
+    expect(api.validateWorkflow).toHaveBeenCalledWith("workflow-1", expect.objectContaining({ schema_version: "1.0" }));
+  });
+
+  it("focuses a node when a validation issue is clicked", async () => {
+    const user = userEvent.setup();
+    api.validateWorkflow.mockResolvedValue({
+      valid: false,
+      errors: [{ code: "AGENT_NOT_FOUND", severity: "error", message: "Agent is not registered", node_id: "planner", edge_id: null, field: "config.agent_id", details: {} }],
+      warnings: [],
+    });
+    renderBuilder();
+    await screen.findByText("Coding Showcase");
+    await user.click(screen.getByRole("button", { name: "Validate" }));
+    await user.click(await screen.findByText("Agent is not registered"));
+    expect(useWorkflowBuilderStore.getState().selectedNodeId).toBe("planner");
+  });
+
+  it("blocks Create Version when backend validation fails", async () => {
+    const user = userEvent.setup();
+    api.validateWorkflow.mockResolvedValue({
+      valid: false,
+      errors: [{ code: "MISSING_OUTPUT_NODE", severity: "error", message: "Workflow requires at least one Data Output node", node_id: null, edge_id: null, field: "nodes[]", details: {} }],
+      warnings: [],
+    });
+    renderBuilder();
+    await screen.findByText("Coding Showcase");
+    await user.click(screen.getByRole("button", { name: "Create Version" }));
+    const dialog = await screen.findByRole("dialog", { name: "Create Workflow Version" });
+    await user.click(within(dialog).getByRole("button", { name: "Create Version" }));
+    expect(api.createWorkflowVersion).not.toHaveBeenCalled();
+    expect(await screen.findByText(/Fix validation errors before creating a Version/)).toBeInTheDocument();
+    expect(screen.getByText("Workflow requires at least one Data Output node")).toBeInTheDocument();
+  });
+
+  it("marks validation stale after a semantic graph change", async () => {
+    const user = userEvent.setup();
+    renderBuilder();
+    await screen.findByText("Coding Showcase");
+    await user.click(screen.getByRole("button", { name: "Validate" }));
+    await screen.findByRole("button", { name: "Close validation panel" });
+    expect(useWorkflowBuilderStore.getState().validationStale).toBe(false);
+    useWorkflowBuilderStore.getState().updateNode("planner", { name: "Renamed" });
+    expect(useWorkflowBuilderStore.getState().validationStale).toBe(true);
   });
 });
