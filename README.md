@@ -2,8 +2,9 @@
 
 Relayvia 是一个连接、编排、执行和追踪已有 Agent 与 Service 的平台。
 
-当前实现到 Phase 6：Agent/Service Registry、Credential Reference、HTTP Connection Test、Workflow Graph 1.0、不可变 Workflow Version、可视化 Workflow Builder、后端权威 Validation Engine，以及 **Workflow Run / Node Run + Runtime State Machine**（不可变 Version → Run Snapshot + Execution Snapshot、Start/Pause/Resume/Cancel、Run 与 Node Run 查询、Runs 页面与只读 Runtime Graph）。
+当前实现到 Phase 7：Agent/Service Registry、Credential Reference、HTTP Connection Test、Workflow Graph 1.0、不可变 Workflow Version、可视化 Workflow Builder、Validation Engine、Workflow Run / Node Run + Runtime State Machine，以及 **MySQL-backed Execution Queue + Scheduler + 独立 Worker**（`FOR UPDATE SKIP LOCKED` 安全 Claim、Lease + Token Fencing、Retry/Backoff、崩溃恢复、at-least-once）。
 
+Execution Queue 文档：[`docs/execution-queue-worker.md`](docs/execution-queue-worker.md)
 Runtime 状态机文档：[`docs/workflow-runtime-state-machine.md`](docs/workflow-runtime-state-machine.md)
 Validation 文档：[`docs/workflow-validation.md`](docs/workflow-validation.md)
 
@@ -68,8 +69,20 @@ npm run dev
 # 仅启动后端
 ./run-backend.sh
 
+# 启动 Worker（MySQL-backed Execution Queue 消费者）
+./run-worker.sh
+
 # 仅启动前端
 ./run-frontend.sh
+```
+
+可配置的 Worker 环境变量：
+
+```bash
+RELAYVIA_WORKER_POLL_INTERVAL=0.5
+RELAYVIA_WORKER_LEASE_SECONDS=60
+RELAYVIA_WORKER_LEASE_RENEW_INTERVAL=20
+RELAYVIA_WORKER_RECOVERY_INTERVAL=30
 ```
 
 可通过环境变量覆盖默认地址和端口：
@@ -121,6 +134,7 @@ POST /api/workflow-runs/{id}/resume
 POST /api/workflow-runs/{id}/cancel
 GET /api/workflow-runs/{id}/nodes
 GET /api/workflow-runs/{id}/nodes/{node_run_id}
+GET /api/workflow-runs/{id}/execution-tasks
 
 Workflow Graph Contract 文档：[`docs/workflow-graph-contract.md`](docs/workflow-graph-contract.md)
 

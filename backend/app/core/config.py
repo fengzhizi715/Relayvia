@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
     credential_encryption_key: str | None = None
 
+    worker_id: str | None = None
+    worker_poll_interval: float = 0.5
+    worker_lease_seconds: int = 60
+    worker_lease_renew_interval: float = 20.0
+    worker_recovery_interval: float = 30.0
+
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[3] / ".env",
         env_prefix="RELAYVIA_",

@@ -293,6 +293,28 @@ export type WorkflowRunPayload = {
   input?: Record<string, unknown>;
 };
 
+export type ExecutionTask = {
+  id: string;
+  workflow_run_id: string;
+  node_run_id: string;
+  task_type: string;
+  status: "pending" | "claimed" | "running" | "retry_wait" | "completed" | "failed" | "cancelled";
+  payload: Record<string, unknown>;
+  priority: number;
+  attempt: number;
+  max_attempts: number;
+  available_at: string;
+  locked_by: string | null;
+  locked_at: string | null;
+  lease_expires_at: string | null;
+  execution_key: string | null;
+  last_error: Record<string, unknown> | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export class ApiError extends Error {
   code: string;
   details: Record<string, unknown>;
@@ -370,3 +392,4 @@ export const resumeWorkflowRun = (id: string) => request<WorkflowRun>(`/api/work
 export const cancelWorkflowRun = (id: string) => request<WorkflowRun>(`/api/workflow-runs/${id}/cancel`, { method: "POST" });
 export const getNodeRuns = (runId: string) => request<NodeRun[]>(`/api/workflow-runs/${runId}/nodes`);
 export const getNodeRun = (runId: string, nodeRunId: string) => request<NodeRun>(`/api/workflow-runs/${runId}/nodes/${nodeRunId}`);
+export const getRunExecutionTasks = (runId: string) => request<ExecutionTask[]>(`/api/workflow-runs/${runId}/execution-tasks`);

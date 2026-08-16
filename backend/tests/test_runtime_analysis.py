@@ -1,6 +1,6 @@
 from app.domain.runs.models import NodeRun
-from app.domain.runs.service import find_ready_nodes
 from app.domain.workflows.graph import parse_workflow_graph
+from app.runtime.scheduler.workflow_scheduler import find_ready_nodes
 from app.runtime.state_machine import NodeRunStatus
 
 

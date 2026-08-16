@@ -19,6 +19,7 @@ from app.infrastructure.database.session import get_db  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.domain.agents.model import Agent  # noqa: F401,E402
 from app.domain.credentials.model import Credential  # noqa: F401,E402
+from app.domain.execution.models import ExecutionTask  # noqa: F401,E402
 from app.domain.runs.models import NodeRun, WorkflowRun  # noqa: F401,E402
 from app.domain.services.model import Service, ServiceAction  # noqa: F401,E402
 from app.domain.workflows.model import Workflow, WorkflowVersion  # noqa: F401,E402
@@ -58,7 +59,7 @@ def http_test_server():
 
 
 @pytest.fixture()
-def db_session():
+def memory_db():
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -73,10 +74,16 @@ def db_session():
 
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-    with factory() as session:
-        yield session
+    yield engine, factory
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+@pytest.fixture()
+def db_session(memory_db):
+    _, factory = memory_db
+    with factory() as session:
+        yield session
 
 
 @pytest.fixture()

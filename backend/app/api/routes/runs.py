@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
+from app.domain.execution.schemas import ExecutionTaskRead
+from app.domain.execution.service import list_execution_tasks
 from app.domain.runs.schemas import NodeRunRead, WorkflowRunCreate, WorkflowRunRead, WorkflowRunSummary
 from app.domain.runs.service import (
     cancel_run,
@@ -63,6 +65,11 @@ def get_run_nodes(run_id: str, db: Session = Depends(get_db)) -> list[NodeRunRea
 @router.get("/{run_id}/nodes/{node_run_id}", response_model=NodeRunRead)
 def get_run_node(run_id: str, node_run_id: str, db: Session = Depends(get_db)) -> NodeRunRead:
     return get_node_run(db, run_id, node_run_id)
+
+
+@router.get("/{run_id}/execution-tasks", response_model=list[ExecutionTaskRead])
+def get_run_execution_tasks(run_id: str, db: Session = Depends(get_db)) -> list[ExecutionTaskRead]:
+    return list_execution_tasks(db, run_id)
 
 
 runs_under_workflow = APIRouter(prefix="/workflows", tags=["runs"])

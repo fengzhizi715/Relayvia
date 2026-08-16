@@ -4,10 +4,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,
   cancelWorkflowRun,
+  getRunExecutionTasks,
   getWorkflowRun,
   pauseWorkflowRun,
   resumeWorkflowRun,
   startWorkflowRun,
+  type ExecutionTask,
   type NodeRun,
   type WorkflowRun,
 } from "../../api/client";
@@ -21,6 +23,37 @@ type RunDetailPageProps = {
   runId: string;
   onBack: () => void;
 };
+
+function ExecutionTasksSection({ runId }: { runId: string }) {
+  const tasks = useQuery({ queryKey: ["execution-tasks", runId], queryFn: () => getRunExecutionTasks(runId) });
+  if (tasks.isLoading) return <div className="loading-state">Loading execution tasks...</div>;
+  const list = tasks.data ?? [];
+  if (list.length === 0) return null;
+  const waitingForWorker = list.some((task) => task.status === "pending" && task.started_at === null);
+  return (
+    <div className="actions-section">
+      <div className="section-heading">
+        <div><p className="eyebrow">EXECUTION QUEUE</p><h4>Execution tasks · read only</h4></div>
+      </div>
+      {waitingForWorker && <div className="detail-warning">Waiting for worker — start one with ./run-worker.sh</div>}
+      <div className="action-list">
+        {list.map((task: ExecutionTask) => (
+          <div className="action-row" key={task.id}>
+            <span className="method-pill">{task.attempt}/{task.max_attempts}</span>
+            <div className="action-copy">
+              <strong>{task.status.toUpperCase()}</strong>
+              <span>node {String(task.payload.node_id ?? "")} · worker {task.locked_by ?? "—"}</span>
+            </div>
+            <span className="action-copy">
+              <small>available {new Date(task.available_at).toLocaleString()}</small>
+              <small>{task.last_error ? `error: ${String(task.last_error.code)}` : ""}</small>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
   const queryClient = useQueryClient();
@@ -135,6 +168,8 @@ export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
           {selectedNodeRun ? <NodeRunInspector nodeRun={selectedNodeRun} /> : <div className="select-state">Select a Node Run to inspect its runtime state.</div>}
         </div>
       </div>
+
+      <ExecutionTasksSection runId={runId} />
     </div>
   );
 }

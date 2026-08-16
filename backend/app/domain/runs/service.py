@@ -40,8 +40,8 @@ from app.runtime.state_machine import (
     transition_node_run,
     transition_workflow_run,
 )
+from app.runtime.scheduler.workflow_scheduler import WorkflowScheduler
 from app.runtime.validation.context import RegistryAgent, RegistryService, RegistryServiceAction, ValidationContext
-from app.runtime.validation.graph_index import GraphIndex
 
 
 def _get_workflow(db: Session, workflow_id: str) -> Workflow:
@@ -351,6 +351,9 @@ def start_run(db: Session, run_id: str) -> WorkflowRunRead:
     if run.started_at is None:
         run.started_at = utc_now()
     db.commit()
+    # Phase 7: submit ExecutionTasks for the initial Ready Nodes.
+    WorkflowScheduler().schedule_ready_nodes(db, run.id)
+    db.commit()
     db.refresh(run)
     return _to_read(db, run)
 
@@ -399,6 +402,9 @@ def cancel_run(db: Session, run_id: str) -> WorkflowRunRead:
         if node_run.finished_at is None:
             node_run.finished_at = utc_now()
 
+    # Phase 7: cancel outstanding ExecutionTasks for this run.
+    WorkflowScheduler().cancel_run_tasks(db, run_id)
+
     db.commit()
     db.refresh(run)
     return _to_read(db, run)
@@ -423,18 +429,3 @@ def runtime_context_for_run(db: Session, run: WorkflowRun) -> RuntimeContext:
     """Rebuild the RuntimeContext for a Run (node outputs are NOT included;
     resolvers read them from NodeRun.output_json)."""
     return RuntimeContext(input_data=run.input_json, variables=run.variables_json)
-
-
-def find_ready_nodes(graph: WorkflowGraph, node_runs: list[NodeRun]) -> list[str]:
-    """Pure function: PENDING nodes whose control-flow predecessors are all
-    COMPLETED. Used by the Scheduler in later phases and by Start today."""
-    index = GraphIndex.build(graph)
-    status_by_id = {node_run.node_id: NodeRunStatus(node_run.status) for node_run in node_runs}
-    completed = {node_id for node_id, status in status_by_id.items() if status is NodeRunStatus.COMPLETED}
-    ready: list[str] = []
-    for node in graph.nodes:
-        if status_by_id.get(node.id) is not NodeRunStatus.PENDING:
-            continue
-        if all(edge.source in completed for edge in index.incoming_edges(node.id)):
-            ready.append(node.id)
-    return ready
