@@ -28,6 +28,8 @@ class NodeRunRead(BaseModel):
     input: dict[str, Any]
     output: dict[str, Any] | None
     error: dict[str, Any] | None
+    execution_metadata: dict[str, Any]
+    artifacts: list[dict[str, Any]]
     attempt: int
     waiting_reason: str | None
     waiting_metadata: dict[str, Any]

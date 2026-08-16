@@ -235,6 +235,8 @@ def _to_node_read(node_run: NodeRun) -> NodeRunRead:
         input=node_run.input_json,
         output=node_run.output_json,
         error=node_run.error_json,
+        execution_metadata=node_run.execution_metadata_json,
+        artifacts=node_run.artifact_refs_json,
         attempt=node_run.attempt,
         waiting_reason=node_run.waiting_reason,
         waiting_metadata=node_run.waiting_metadata_json,

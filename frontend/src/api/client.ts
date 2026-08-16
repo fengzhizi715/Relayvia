@@ -241,6 +241,8 @@ export type NodeRun = {
   input: Record<string, unknown>;
   output: Record<string, unknown> | null;
   error: Record<string, unknown> | null;
+  execution_metadata: Record<string, unknown>;
+  artifacts: Array<Record<string, unknown>>;
   attempt: number;
   waiting_reason: string | null;
   waiting_metadata: Record<string, unknown>;

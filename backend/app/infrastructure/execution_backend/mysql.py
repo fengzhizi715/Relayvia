@@ -110,7 +110,16 @@ class MySQLExecutionBackend(ExecutionBackend):
             db.commit()
             return True
 
-    async def complete(self, task_id: str, worker_id: str, lease_token: str, output: dict) -> bool:
+    async def complete(
+        self,
+        task_id: str,
+        worker_id: str,
+        lease_token: str,
+        output: dict,
+        *,
+        execution_metadata: dict | None = None,
+        artifacts: list[dict] | None = None,
+    ) -> bool:
         with self._session_factory() as db:
             task = db.scalar(select(ExecutionTask).where(ExecutionTask.id == task_id).with_for_update())
             if not self._owns(db, task, worker_id, lease_token):
@@ -119,11 +128,20 @@ class MySQLExecutionBackend(ExecutionBackend):
             task.status = ExecutionTaskStatus.COMPLETED.value
             task.finished_at = utc_now()
             task.last_error_json = None
-            self._node_completed(db, task.node_run_id, output)
+            self._node_completed(db, task.node_run_id, output, execution_metadata or {}, artifacts or [])
             db.commit()
             return True
 
-    async def fail(self, task_id: str, worker_id: str, lease_token: str, error: dict) -> bool:
+    async def fail(
+        self,
+        task_id: str,
+        worker_id: str,
+        lease_token: str,
+        error: dict,
+        *,
+        execution_metadata: dict | None = None,
+        artifacts: list[dict] | None = None,
+    ) -> bool:
         with self._session_factory() as db:
             task = db.scalar(select(ExecutionTask).where(ExecutionTask.id == task_id).with_for_update())
             if not self._owns(db, task, worker_id, lease_token):
@@ -132,7 +150,7 @@ class MySQLExecutionBackend(ExecutionBackend):
             task.status = ExecutionTaskStatus.FAILED.value
             task.finished_at = utc_now()
             task.last_error_json = error
-            self._node_failed(db, task.node_run_id, error)
+            self._node_failed(db, task.node_run_id, error, execution_metadata or {}, artifacts or [])
             db.commit()
             return True
 
@@ -258,17 +276,31 @@ class MySQLExecutionBackend(ExecutionBackend):
         node_run.status = target.value
 
     @staticmethod
-    def _node_completed(db: Session, node_run_id: str, output: dict) -> None:
+    def _node_completed(
+        db: Session,
+        node_run_id: str,
+        output: dict,
+        execution_metadata: dict,
+        artifacts: list[dict],
+    ) -> None:
         node_run = db.get(NodeRun, node_run_id)
         if node_run is None:
             return
         transition_node_run(NodeRunStatus(node_run.status), NodeRunStatus.COMPLETED)
         node_run.status = NodeRunStatus.COMPLETED.value
         node_run.output_json = output
+        node_run.execution_metadata_json = execution_metadata
+        node_run.artifact_refs_json = artifacts
         node_run.finished_at = utc_now()
 
     @staticmethod
-    def _node_failed(db: Session, node_run_id: str, error: dict) -> None:
+    def _node_failed(
+        db: Session,
+        node_run_id: str,
+        error: dict,
+        execution_metadata: dict,
+        artifacts: list[dict],
+    ) -> None:
         node_run = db.get(NodeRun, node_run_id)
         if node_run is None:
             return
@@ -277,6 +309,8 @@ class MySQLExecutionBackend(ExecutionBackend):
             transition_node_run(current, NodeRunStatus.FAILED)
             node_run.status = NodeRunStatus.FAILED.value
             node_run.error_json = error
+            node_run.execution_metadata_json = execution_metadata
+            node_run.artifact_refs_json = artifacts
             node_run.finished_at = utc_now()
 
     @staticmethod

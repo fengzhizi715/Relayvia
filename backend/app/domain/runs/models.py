@@ -73,6 +73,8 @@ class NodeRun(TimestampMixin, Base):
     input_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     output_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    execution_metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    artifact_refs_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
 
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     waiting_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)

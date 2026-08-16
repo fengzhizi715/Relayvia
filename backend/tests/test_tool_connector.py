@@ -1,10 +1,8 @@
-"""Tool Connector tests + Tool node end-to-end through the Worker."""
+"""Tool nodes require a Relayvia Runner; the server never runs commands."""
 
 import asyncio
-import shutil
 import uuid
 
-import pytest
 from sqlalchemy import select
 
 from app.connectors.tools.base import ToolInvocationConfig
@@ -18,33 +16,12 @@ from app.runtime.state_machine import NodeRunStatus, WorkflowRunStatus
 from app.workers.workflow_worker import _process_task
 
 
-def test_tool_success():
+def test_tool_connector_requires_runner():
     result = asyncio.run(ShellToolConnector().execute(ToolInvocationConfig(command="echo hello", timeout_seconds=10)))
-    assert result.status == "success"
-    assert result.output["stdout"].strip() == "hello"
-    assert result.output["exit_code"] == 0
-
-
-def test_tool_nonzero_exit_is_retryable():
-    result = asyncio.run(ShellToolConnector().execute(ToolInvocationConfig(command="exit 3", timeout_seconds=10)))
-    assert result.status == "failed"
-    assert result.retryable is True
-    assert result.error is not None
-    assert result.error.code == "TOOL_EXIT_NONZERO"
-
-
-def test_tool_timeout():
-    result = asyncio.run(ShellToolConnector().execute(ToolInvocationConfig(command="sleep 5", timeout_seconds=1)))
     assert result.status == "failed"
     assert result.retryable is False
     assert result.error is not None
-    assert result.error.code == "TOOL_TIMEOUT"
-
-
-@pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
-def test_tool_git_command():
-    result = asyncio.run(ShellToolConnector().execute(ToolInvocationConfig(command="git --version", timeout_seconds=10)))
-    assert result.status == "success"
+    assert result.error.code == "RUNNER_REQUIRED"
 
 
 def tool_graph() -> dict:
@@ -103,7 +80,7 @@ def make_tool_run(db, graph: dict):
     return run
 
 
-def test_tool_node_end_to_end(memory_db):
+def test_tool_node_fails_without_runner(memory_db):
     _, factory = memory_db
     with factory() as db:
         run = make_tool_run(db, tool_graph())
@@ -126,7 +103,7 @@ def test_tool_node_end_to_end(memory_db):
 
     with factory() as db:
         refreshed = db.get(WorkflowRun, run_id)
-        assert refreshed.status == WorkflowRunStatus.COMPLETED.value
+        assert refreshed.status == WorkflowRunStatus.FAILED.value
         tool_run = db.scalar(select(NodeRun).where(NodeRun.workflow_run_id == run_id, NodeRun.node_id == "t"))
-        assert tool_run.status == NodeRunStatus.COMPLETED.value
-        assert tool_run.output_json["stdout"].strip() == "hello"
+        assert tool_run.status == NodeRunStatus.FAILED.value
+        assert tool_run.error_json["code"] == "RUNNER_REQUIRED"

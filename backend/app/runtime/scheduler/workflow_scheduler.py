@@ -6,6 +6,8 @@ non-RUNNING WorkflowRuns. All methods are synchronous and operate inside the
 caller's transaction.
 """
 
+from typing import Any
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -123,6 +125,7 @@ class WorkflowScheduler:
             return []
 
         graph = parse_workflow_graph(run.graph_snapshot_json)
+        nodes_by_id = {node.id: node for node in graph.nodes}
         node_runs = list_node_runs(db, run_id)
         mark_unreachable_condition_nodes(graph, node_runs)
         submitted: list[str] = []
@@ -130,21 +133,34 @@ class WorkflowScheduler:
             node_run = next((node_run for node_run in node_runs if node_run.node_id == node_id), None)
             if node_run is None:
                 continue
+            node = nodes_by_id.get(node_id)
+            if node is None:
+                continue
             existing = db.scalar(select(ExecutionTask).where(ExecutionTask.node_run_id == node_run.id))
             if existing is not None:
                 continue
             transition_node_run(NodeRunStatus(node_run.status), NodeRunStatus.QUEUED)
             node_run.status = NodeRunStatus.QUEUED.value
+            max_attempts, retry_backoff_seconds = _retry_settings_for_node(
+                run,
+                node.model_dump(mode="json"),
+                default_backoff_seconds=self.default_backoff_seconds,
+            )
             db.add(
                 ExecutionTask(
                     workflow_run_id=run_id,
                     node_run_id=node_run.id,
                     task_type="node_execution",
                     status=ExecutionTaskStatus.PENDING.value,
-                    payload_json={"workflow_run_id": run_id, "node_run_id": node_run.id, "node_id": node_id},
+                    payload_json={
+                        "workflow_run_id": run_id,
+                        "node_run_id": node_run.id,
+                        "node_id": node_id,
+                        "retry_backoff_seconds": retry_backoff_seconds,
+                    },
                     priority=self.default_priority,
                     attempt=0,
-                    max_attempts=self.default_max_attempts,
+                    max_attempts=max_attempts,
                     available_at=utc_now(),
                     execution_key=f"{run_id}:{node_run.id}",
                 )
@@ -203,3 +219,52 @@ class WorkflowScheduler:
                 transition_node_run(status, NodeRunStatus.CANCELLED)
                 node_run.status = NodeRunStatus.CANCELLED.value
                 node_run.finished_at = utc_now()
+
+
+def _retry_settings_for_node(
+    run: WorkflowRun,
+    node: dict[str, Any],
+    *,
+    default_backoff_seconds: int,
+) -> tuple[int, int]:
+    """Derive durable retry settings from the immutable Run snapshot.
+
+    Graph retry is explicit and takes precedence.  A Service node without an
+    explicit graph override inherits its ServiceAction retry policy.  All
+    other nodes perform one attempt by default, preventing accidental replay
+    of non-idempotent work.
+    """
+    config = node.get("config") if isinstance(node.get("config"), dict) else {}
+    retry = config.get("retry")
+    if isinstance(retry, dict) and "max_retries" in retry:
+        max_retries = _bounded_int(retry.get("max_retries"), default=0, maximum=10)
+        return max_retries + 1, _service_backoff_seconds(run, node, default=default_backoff_seconds)
+
+    if node.get("type") == "service" and node.get("subtype") == "http":
+        action_id = config.get("service_action_id")
+        actions = run.execution_snapshot_json.get("service_actions", {})
+        action = actions.get(action_id) if isinstance(actions, dict) and isinstance(action_id, str) else None
+        policy = action.get("retry_policy") if isinstance(action, dict) else None
+        if isinstance(policy, dict):
+            return _bounded_int(policy.get("max_retries"), default=0, maximum=10) + 1, _bounded_int(
+                policy.get("backoff_seconds"), default=5, maximum=86_400
+            )
+    return 1, 0
+
+
+def _service_backoff_seconds(run: WorkflowRun, node: dict[str, Any], *, default: int) -> int:
+    config = node.get("config") if isinstance(node.get("config"), dict) else {}
+    if node.get("type") != "service" or node.get("subtype") != "http":
+        return default
+    actions = run.execution_snapshot_json.get("service_actions", {})
+    action_id = config.get("service_action_id")
+    action = actions.get(action_id) if isinstance(actions, dict) and isinstance(action_id, str) else None
+    policy = action.get("retry_policy") if isinstance(action, dict) else None
+    return _bounded_int(policy.get("backoff_seconds") if isinstance(policy, dict) else None, default=default, maximum=86_400)
+
+
+def _bounded_int(value: Any, *, default: int, maximum: int) -> int:
+    try:
+        return max(0, min(int(value), maximum))
+    except (TypeError, ValueError):
+        return default

@@ -84,6 +84,7 @@ def test_agent_invocation_body_contract(http_server):
     result = asyncio.run(DefaultNodeExecutor(None).execute(context))
     assert result.ok is True
     assert result.output == {"ok": True}
+    assert result.metadata == {"status_code": 200}
     assert recorder["body"] == {
         "input": {"task": "review"},
         "context": {"workflow_run_id": "run-1", "node_id": "a", "attempt": 2},

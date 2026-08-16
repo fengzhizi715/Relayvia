@@ -51,11 +51,29 @@ class ExecutionBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def complete(self, task_id: str, worker_id: str, lease_token: str, output: dict[str, Any]) -> bool:
+    async def complete(
+        self,
+        task_id: str,
+        worker_id: str,
+        lease_token: str,
+        output: dict[str, Any],
+        *,
+        execution_metadata: dict[str, Any] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+    ) -> bool:
         raise NotImplementedError
 
     @abstractmethod
-    async def fail(self, task_id: str, worker_id: str, lease_token: str, error: dict[str, Any]) -> bool:
+    async def fail(
+        self,
+        task_id: str,
+        worker_id: str,
+        lease_token: str,
+        error: dict[str, Any],
+        *,
+        execution_metadata: dict[str, Any] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+    ) -> bool:
         raise NotImplementedError
 
     @abstractmethod

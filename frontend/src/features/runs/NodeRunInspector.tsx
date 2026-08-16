@@ -23,6 +23,8 @@ export function NodeRunInspector({ nodeRun }: { nodeRun: NodeRun }) {
       <div className="contract-grid">
         <div><span className="detail-label">Input</span><pre>{JSON.stringify(nodeRun.input, null, 2)}</pre></div>
         <div><span className="detail-label">Output</span><pre>{JSON.stringify(nodeRun.output ?? null, null, 2)}</pre></div>
+        <div><span className="detail-label">Execution metadata</span><pre>{JSON.stringify(nodeRun.execution_metadata, null, 2)}</pre></div>
+        <div><span className="detail-label">Artifacts</span><pre>{JSON.stringify(nodeRun.artifacts, null, 2)}</pre></div>
         <div><span className="detail-label">Error</span><pre>{JSON.stringify(nodeRun.error ?? null, null, 2)}</pre></div>
       </div>
     </div>

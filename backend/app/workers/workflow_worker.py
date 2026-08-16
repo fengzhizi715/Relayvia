@@ -31,6 +31,7 @@ from app.runtime.context import ContextResolver, UnresolvedContextReference
 from app.runtime.executor.base import NodeExecutionContext, NodeExecutionResult, NodeExecutor
 from app.runtime.executor.default import DefaultNodeExecutor
 from app.runtime.executor.result import ExecutionError
+from app.runtime.executor.trace import sanitize_artifacts, sanitize_error, sanitize_metadata
 from app.runtime.recovery.execution_recovery import run_execution_recovery
 from app.runtime.scheduler.workflow_scheduler import WorkflowScheduler
 from app.runtime.state_machine import WorkflowRunStatus
@@ -124,13 +125,41 @@ async def _process_task(
         renewer.cancel()
 
     if result.ok:
-        await backend.complete(task.id, worker_id, task.lease_token, result.output or {})
+        await backend.complete(
+            task.id,
+            worker_id,
+            task.lease_token,
+            result.output or {},
+            execution_metadata=sanitize_metadata(result.metadata),
+            artifacts=sanitize_artifacts(result.artifacts),
+        )
         _reconcile_after(session_factory, scheduler, task.workflow_run_id)
     elif result.retryable and task.attempt + 1 < task.max_attempts:
-        await backend.schedule_retry(task.id, worker_id, task.lease_token, scheduler.default_backoff_seconds)
+        await backend.schedule_retry(
+            task.id,
+            worker_id,
+            task.lease_token,
+            _retry_backoff_seconds(task.payload, scheduler.default_backoff_seconds),
+        )
     else:
-        await backend.fail(task.id, worker_id, task.lease_token, result.error.to_dict() if result.error else {"code": "UNKNOWN", "message": "execution failed", "retryable": False, "details": {}})
+        error = result.error.to_dict() if result.error else {"code": "UNKNOWN", "message": "execution failed", "retryable": False, "details": {}}
+        await backend.fail(
+            task.id,
+            worker_id,
+            task.lease_token,
+            sanitize_error(error),
+            execution_metadata=sanitize_metadata(result.metadata),
+            artifacts=sanitize_artifacts(result.artifacts),
+        )
         _reconcile_after(session_factory, scheduler, task.workflow_run_id)
+
+
+def _retry_backoff_seconds(payload: dict, default: int) -> int:
+    """Read the scheduler-owned backoff from a task payload defensively."""
+    try:
+        return max(0, min(int(payload.get("retry_backoff_seconds", default)), 86_400))
+    except (AttributeError, TypeError, ValueError):
+        return max(0, min(default, 86_400))
 
 
 async def run_worker(

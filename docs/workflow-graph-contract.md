@@ -97,7 +97,8 @@ V1 `type` 只有：`agent`、`service`、`tool`、`logic`、`human`、`data`。
 }
 ```
 
-Phase 3 只定义 Contract，不绑定 Runner，也不执行命令。
+Tool Contract 必须由 Relayvia Runner 执行。当前未实现 Runner dispatch，运行 Tool
+Node 会返回 `RUNNER_REQUIRED`，不会在 Server Worker 中执行命令。
 
 ### Logic
 
@@ -184,4 +185,3 @@ Draft PUT 和 Create Version 都执行同一组校验：
 * disabled Agent/Service/Action 允许被保存，但返回 Warning。
 
 这不是完整 Workflow Graph Validation；Runtime、拓扑、输入输出兼容性和执行可行性留给后续阶段。
-

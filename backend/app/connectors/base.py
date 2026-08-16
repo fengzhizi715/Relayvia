@@ -6,8 +6,8 @@ report the outcome. They never mutate WorkflowRun / NodeRun state, never
 schedule the next node, and never decide retry policy — the Workflow Runtime
 owns all of that.
 
-`ExecutionResult.artifacts` is reserved for Artifact storage (a later phase);
-V1 does not persist artifacts.
+`ExecutionResult.artifacts` contains sanitized Artifact references for the Run
+Trace. Artifact binary storage remains outside this connector contract.
 """
 
 from abc import ABC, abstractmethod

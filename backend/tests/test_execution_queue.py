@@ -8,6 +8,7 @@ from app.domain.execution.state_machine import ExecutionTaskStatus
 from app.domain.runs.models import NodeRun, WorkflowRun
 from app.domain.workflows.model import Workflow, WorkflowVersion
 from app.infrastructure.execution_backend.mysql import MySQLExecutionBackend
+from app.infrastructure.database.base import utc_now
 from app.runtime.executor.base import NodeExecutionContext, NodeExecutionResult, NodeExecutor
 from app.runtime.executor.default import DefaultNodeExecutor
 from app.runtime.executor.result import ExecutionError
@@ -92,6 +93,27 @@ class FakeExecutor(NodeExecutor):
         return NodeExecutionResult(ok=True, output={"node": ctx.node_id, "ok": True})
 
 
+class TraceExecutor(NodeExecutor):
+    async def execute(self, _ctx: NodeExecutionContext) -> NodeExecutionResult:
+        return NodeExecutionResult(
+            ok=True,
+            output={"ok": True},
+            metadata={"status_code": 201, "authorization": "must-not-persist"},
+            artifacts=[{"uri": "artifact://report-1", "type": "report", "token": "must-not-persist"}],
+        )
+
+
+class FailingTraceExecutor(NodeExecutor):
+    async def execute(self, _ctx: NodeExecutionContext) -> NodeExecutionResult:
+        return NodeExecutionResult(
+            ok=False,
+            retryable=False,
+            error=ExecutionError("REMOTE_FAILED", "remote call failed"),
+            metadata={"status_code": 503, "authorization": "must-not-persist"},
+            artifacts=[{"uri": "artifact://failure-report", "token": "must-not-persist"}],
+        )
+
+
 # --- Scheduler ---
 
 
@@ -109,6 +131,43 @@ def test_scheduler_is_idempotent(db_session):
     assert task.status == ExecutionTaskStatus.PENDING.value
     node_run = db_session.get(NodeRun, task.node_run_id)
     assert node_run.status == NodeRunStatus.QUEUED.value
+    assert task.max_attempts == 1
+    assert task.payload_json["retry_backoff_seconds"] == 0
+
+
+def test_scheduler_persists_graph_and_service_action_retry_policy(db_session):
+    graph = linear_graph("agent-1")
+    graph["nodes"][1]["config"]["retry"] = {"max_retries": 2}
+    run = make_run(db_session, graph)
+    scheduler = WorkflowScheduler()
+    scheduler.schedule_ready_nodes(db_session, run.id)
+    db_session.commit()
+    task = db_session.scalar(select(ExecutionTask).where(ExecutionTask.workflow_run_id == run.id))
+    assert task.max_attempts == 3
+    assert task.payload_json["retry_backoff_seconds"] == 5
+
+    service_graph = {
+        **linear_graph("agent-1"),
+        "nodes": [
+            linear_graph("agent-1")["nodes"][0],
+            {
+                "id": "a", "type": "service", "subtype": "http", "name": "Service", "position": {"x": 100, "y": 0},
+                "config": {"service_id": "service-1", "service_action_id": "action-1"}, "input_mapping": {}, "metadata": {},
+            },
+            linear_graph("agent-1")["nodes"][2],
+        ],
+    }
+    service_run = make_run(db_session, service_graph)
+    service_run.execution_snapshot_json = {
+        "schema_version": "2",
+        "service_actions": {"action-1": {"retry_policy": {"max_retries": 2, "backoff_seconds": 7}}},
+    }
+    db_session.commit()
+    scheduler.schedule_ready_nodes(db_session, service_run.id)
+    db_session.commit()
+    service_task = db_session.scalar(select(ExecutionTask).where(ExecutionTask.workflow_run_id == service_run.id))
+    assert service_task.max_attempts == 3
+    assert service_task.payload_json["retry_backoff_seconds"] == 7
 
 
 def test_scheduler_does_not_schedule_non_running_run(db_session):
@@ -333,11 +392,74 @@ def test_linear_workflow_end_to_end(client, http_test_server, memory_db):
     assert all(task["status"] == "completed" for task in tasks)
 
 
+def test_worker_persists_sanitized_connector_trace(client, http_test_server, memory_db):
+    _, factory = memory_db
+    agent = client.post("/api/agents", json={"name": "Trace Agent", "endpoint": f"{http_test_server}/agent"}).json()
+    workflow = client.post("/api/workflows", json={"name": "Trace Workflow"}).json()
+    assert client.put(f"/api/workflows/{workflow['id']}/graph", json={"graph": linear_graph(agent["id"])}).status_code == 200
+    assert client.post(f"/api/workflows/{workflow['id']}/versions", json={}).status_code == 201
+    run = client.post(f"/api/workflows/{workflow['id']}/runs", json={}).json()
+    client.post(f"/api/workflow-runs/{run['id']}/start")
+
+    backend = make_backend(factory)
+    scheduler = WorkflowScheduler()
+
+    async def drive():
+        while task := await backend.claim("trace-worker"):
+            await _process_task(
+                task,
+                backend=backend,
+                scheduler=scheduler,
+                session_factory=factory,
+                executor=TraceExecutor(),
+                worker_id="trace-worker",
+                renew_interval=60.0,
+            )
+
+    asyncio.run(drive())
+    detail = client.get(f"/api/workflow-runs/{run['id']}").json()
+    agent_run = next(node for node in detail["node_runs"] if node["node_id"] == "a")
+    assert agent_run["execution_metadata"] == {"status_code": 201, "authorization": "***REDACTED***"}
+    assert agent_run["artifacts"] == [{"uri": "artifact://report-1", "type": "report", "token": "***REDACTED***"}]
+
+
+def test_worker_persists_sanitized_failed_connector_trace(memory_db):
+    _, factory = memory_db
+    with factory() as db:
+        run = make_run(db, linear_graph("agent-1"))
+        scheduler = WorkflowScheduler()
+        scheduler.schedule_ready_nodes(db, run.id)
+        db.commit()
+        run_id = run.id
+
+    backend = make_backend(factory)
+
+    async def drive():
+        task = await backend.claim("failed-trace-worker")
+        assert task is not None
+        await _process_task(
+            task,
+            backend=backend,
+            scheduler=scheduler,
+            session_factory=factory,
+            executor=FailingTraceExecutor(),
+            worker_id="failed-trace-worker",
+            renew_interval=60.0,
+        )
+
+    asyncio.run(drive())
+    with factory() as db:
+        node_run = db.scalar(select(NodeRun).where(NodeRun.workflow_run_id == run_id, NodeRun.node_id == "a"))
+        assert node_run.execution_metadata_json == {"status_code": 503, "authorization": "***REDACTED***"}
+        assert node_run.artifact_refs_json == [{"uri": "artifact://failure-report", "token": "***REDACTED***"}]
+
+
 def test_worker_retry_then_success(client, http_test_server, memory_db):
     _, factory = memory_db
     agent = client.post("/api/agents", json={"name": "Retry Agent", "endpoint": f"{http_test_server}/agent"}).json()
     workflow = client.post("/api/workflows", json={"name": "Queue Retry"}).json()
     graph = linear_graph(agent["id"])
+    graph["nodes"][1]["config"]["retry"] = {"max_retries": 1}
     assert client.put(f"/api/workflows/{workflow['id']}/graph", json={"graph": graph}).status_code == 200
     assert client.post(f"/api/workflows/{workflow['id']}/versions", json={}).status_code == 201
     run = client.post(f"/api/workflows/{workflow['id']}/runs", json={}).json()
@@ -355,6 +477,11 @@ def test_worker_retry_then_success(client, http_test_server, memory_db):
             if task is None:
                 break
             await _process_task(task, backend=backend, scheduler=scheduler, session_factory=factory, executor=executor, worker_id=worker_id, renew_interval=60.0)
+            with factory() as db:
+                retry_task = db.scalar(select(ExecutionTask).where(ExecutionTask.workflow_run_id == run["id"], ExecutionTask.status == ExecutionTaskStatus.RETRY_WAIT.value))
+                if retry_task is not None:
+                    retry_task.available_at = utc_now()
+                    db.commit()
 
     asyncio.run(drive())
 
@@ -368,6 +495,7 @@ def test_worker_retry_exhausted_fails_run(client, http_test_server, memory_db):
     agent = client.post("/api/agents", json={"name": "Fail Agent", "endpoint": f"{http_test_server}/agent"}).json()
     workflow = client.post("/api/workflows", json={"name": "Queue Fail"}).json()
     graph = linear_graph(agent["id"])
+    graph["nodes"][1]["config"]["retry"] = {"max_retries": 2}
     assert client.put(f"/api/workflows/{workflow['id']}/graph", json={"graph": graph}).status_code == 200
     assert client.post(f"/api/workflows/{workflow['id']}/versions", json={}).status_code == 201
     run = client.post(f"/api/workflows/{workflow['id']}/runs", json={}).json()
@@ -385,6 +513,11 @@ def test_worker_retry_exhausted_fails_run(client, http_test_server, memory_db):
             if task is None:
                 break
             await _process_task(task, backend=backend, scheduler=scheduler, session_factory=factory, executor=executor, worker_id=worker_id, renew_interval=60.0)
+            with factory() as db:
+                retry_task = db.scalar(select(ExecutionTask).where(ExecutionTask.workflow_run_id == run["id"], ExecutionTask.status == ExecutionTaskStatus.RETRY_WAIT.value))
+                if retry_task is not None:
+                    retry_task.available_at = utc_now()
+                    db.commit()
 
     asyncio.run(drive())
 

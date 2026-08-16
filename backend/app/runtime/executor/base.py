@@ -28,6 +28,8 @@ class NodeExecutionResult:
     output: dict[str, Any] | None = None
     retryable: bool = False
     error: ExecutionError | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
 
 
 class NodeExecutor:

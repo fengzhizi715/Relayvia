@@ -14,8 +14,6 @@ from app.connectors.agents.http import HTTPAgentConnector
 from app.connectors.base import ExecutionResult
 from app.connectors.http import HTTPInvocationConfig
 from app.connectors.services.http import HTTPServiceConnector
-from app.connectors.tools.base import ToolInvocationConfig
-from app.connectors.tools.shell import ShellToolConnector
 from app.domain.credentials.model import Credential
 from app.infrastructure.security.url_policy import combine_service_url
 from app.runtime.executor.base import NodeExecutionContext, NodeExecutionResult, NodeExecutor
@@ -41,7 +39,10 @@ class DefaultNodeExecutor(NodeExecutor):
         if node_type == "service" and subtype == "http":
             return await self._execute_service(context)
         if node_type == "tool":
-            return await self._execute_tool(context)
+            return _failure(
+                "RUNNER_REQUIRED",
+                "Tool nodes require a registered Relayvia Runner; server-side execution is disabled",
+            )
         if node_type == "logic" and subtype == "condition":
             return self._execute_condition(context)
         if node_type == "logic" and subtype in {"parallel", "merge"}:
@@ -122,20 +123,6 @@ class DefaultNodeExecutor(NodeExecutor):
         )
         return _execution_result_to_node(result, action.get("output_schema"), "Service output")
 
-    async def _execute_tool(self, context: NodeExecutionContext) -> NodeExecutionResult:
-        config = context.resolved_config
-        command = config.get("command")
-        if not isinstance(command, str) or not command.strip():
-            return _failure("MISSING_TOOL_COMMAND", "Tool command is required")
-        result = await ShellToolConnector().execute(
-            ToolInvocationConfig(
-                command=command,
-                working_directory=str(config["working_directory"]) if config.get("working_directory") else None,
-                timeout_seconds=int(config.get("timeout_seconds") or 60),
-            )
-        )
-        return _execution_result_to_node(result, None, "Tool output")
-
     def _execute_condition(self, context: NodeExecutionContext) -> NodeExecutionResult:
         expression = context.resolved_config.get("expression")
         if not isinstance(expression, dict):
@@ -189,9 +176,20 @@ def _validate_payload(value: Any, schema: Any, label: str) -> NodeExecutionResul
 def _execution_result_to_node(result: ExecutionResult, output_schema: Any, label: str) -> NodeExecutionResult:
     """Map the unified Connector `ExecutionResult` onto the Node boundary."""
     if result.status != "success":
-        return NodeExecutionResult(ok=False, retryable=result.retryable, error=result.error)
+        return NodeExecutionResult(
+            ok=False,
+            retryable=result.retryable,
+            error=result.error,
+            metadata=dict(result.metadata or {}),
+            artifacts=list(result.artifacts or []),
+        )
     invalid = _validate_payload(result.output or {}, output_schema, label)
-    return invalid or NodeExecutionResult(ok=True, output=result.output or {})
+    return invalid or NodeExecutionResult(
+        ok=True,
+        output=result.output or {},
+        metadata=dict(result.metadata or {}),
+        artifacts=list(result.artifacts or []),
+    )
 
 
 def _string_dict(value: Any) -> dict[str, str]:

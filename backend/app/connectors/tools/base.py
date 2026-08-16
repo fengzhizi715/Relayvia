@@ -1,8 +1,9 @@
 """Tool Connector contract.
 
-Tools execute in a Worker-controlled environment (never from a FastAPI request
-handler). `ToolInvocationConfig` carries only the command and its working
-directory; no credentials or environment secrets are injected.
+Tool commands are deliberately not executed by the Relayvia server Worker.
+They must be delegated to a registered Relayvia Runner, which owns the local
+workspace and process environment.  The current V1 connector remains a
+structured compatibility boundary while Runner dispatch is introduced.
 """
 
 from abc import ABC, abstractmethod

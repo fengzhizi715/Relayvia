@@ -114,7 +114,11 @@ start
 ## Retry
 
 - `attempt` 从 0 起；每次进入 RUNNING 时 `attempt += 1`。
-- 外部 `max_retries = 2` → 内部 `max_attempts = 3`。
+- Graph Node 显式 `retry.max_retries = 2` → 内部 `max_attempts = 3`。没有显式
+  retry 的 Agent、Tool 与内建逻辑节点默认只执行一次；Service Node 则继承其
+  Service Action 的 `retry_policy`。
+- `max_attempts` 与 `retry_backoff_seconds` 在 Task 入队时写入 payload；Worker
+  不再用全局默认值覆盖某个历史 Run 的策略。
 - 失败且 `attempt + 1 < max_attempts`：Task `RUNNING → RETRY_WAIT`（NodeRun
   `RUNNING → RETRYING`），`available_at = now + backoff`。
 - 到期后 `promote_due_retries()`：`RETRY_WAIT → PENDING`（NodeRun `RETRYING → QUEUED`）。
@@ -186,15 +190,15 @@ node 定义快照、已解析 config/input、execution snapshot、attempt，**�
 `app.connectors.base` 定义统一契约：`Connector.execute(request) → ExecutionResult`。
 
 ```python
-ExecutionResult: status(success|failed), output, artifacts(预留), metadata, retryable, error
+ExecutionResult: status(success|failed), output, artifacts, metadata, retryable, error
 ```
 
 - **Agent / Service**：`HTTPAgentConnector` / `HTTPServiceConnector` 接收
   `HTTPInvocationConfig`（url / method / headers / body / query / timeout /
   credential / retry_on_status），返回 `ExecutionResult`。
-- **Tool**：`ShellToolConnector`（`connectors/tools/`）接收 `ToolInvocationConfig`
-  （command / working_directory / timeout），在 **Worker 可控环境**内以子进程执行
-  （Shell / Git / Test Command 均走 shell，超时强制终止），返回 `ExecutionResult`。
+- **Tool**：`ToolInvocationConfig` 是未来 Runner dispatch 的契约。当前没有已注册
+  Runner 时，Tool Node 返回明确的 `RUNNER_REQUIRED`；Workflow Worker 不会创建
+  shell 子进程，也不会继承 Server 环境变量执行用户命令。
 - Connector 只调用外部能力并报告结果；**不修改 WorkflowRun / NodeRun 状态、不调度
   下一个 Node、不决定 Retry**。这些全部由 Runtime 负责。
 
@@ -235,14 +239,15 @@ encode（缺参报 `MISSING_PATH_PARAMETER`），Action 静态 headers 与 Servi
 
 ### Tool 节点
 
-`tool`（Shell / Git / Test Command）：按 `command` / `working_directory` / `timeout_seconds`
-在 Worker 内以子进程执行；输出 `{"stdout", "exit_code"}`（stderr 进 metadata），非零退出码
-按可重试失败处理，超时强制终止（`TOOL_TIMEOUT`，非可重试）。
+`tool`（Shell / Git / Test Command）：Graph Contract 已保留，但必须通过未来的
+Relayvia Runner 执行。当前 Server Worker 会返回 `RUNNER_REQUIRED`，不会在服务端
+执行命令。
 
 ### 安全与未实现
 
 Credential 只在 Worker 内按 `credential_id` 临时解密，绝不进入 Snapshot、Output、Task
-Payload 或 Error；失败结果也不含 Secret。Human、Wait、Router、Local/Custom Agent 仍返回
+Payload 或 Error；失败结果也不含 Secret。Connector metadata 和 Artifact 引用会经过
+密钥字段脱敏与大小限制后持久化到 NodeRun Trace。Human、Wait、Router、Local/Custom Agent 仍返回
 明确的 `UNSUPPORTED_NODE_EXECUTION`，不会伪装为已执行。HTTP 响应体限制为 1MB
 （`MAX_RESPONSE_BYTES`），超限报 `RESPONSE_TOO_LARGE`（非 retryable）。
 
@@ -264,9 +269,9 @@ Payload 或 Error；失败结果也不含 Secret。Human、Wait、Router、Local
 
 ## 当前边界
 
-尚未实现：Codex/Cursor/OpenCode Adapter、Local/Custom Agent、Human Approval Runtime、
-Wait Timer、Router、SSE Run Event 与 Artifact Storage（`ExecutionResult.artifacts` 已预留）。
-HTTP Agent / HTTP Service / Shell / Git / Test Command Tool 已可执行。
+尚未实现：Codex/Cursor/OpenCode Adapter、Local/Custom Agent、Relayvia Runner dispatch、
+Human Approval Runtime、Wait Timer、Router、SSE Run Event 与 Artifact binary Storage。
+HTTP Agent / HTTP Service 已可执行；Tool Node 在 Runner 完成前明确拒绝执行。
 
 ## 配置
 
