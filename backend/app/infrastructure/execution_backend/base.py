@@ -81,6 +81,18 @@ class ExecutionBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def wait_node(
+        self,
+        task_id: str,
+        worker_id: str,
+        lease_token: str,
+        *,
+        waiting_reason: str,
+        waiting_metadata: dict[str, Any],
+    ) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
     async def renew_lease(self, task_id: str, worker_id: str, lease_token: str) -> bool:
         raise NotImplementedError
 

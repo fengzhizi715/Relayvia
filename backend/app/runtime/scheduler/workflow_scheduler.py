@@ -6,6 +6,7 @@ non-RUNNING WorkflowRuns. All methods are synchronous and operate inside the
 caller's transaction.
 """
 
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.execution.models import ExecutionTask
 from app.domain.execution.state_machine import ExecutionTaskStatus, is_execution_task_terminal, transition_execution_task
+from app.domain.runs.events import RunEventType, record_event
 from app.domain.runs.models import NodeRun, WorkflowRun
 from app.domain.runs.repository import list_node_runs
 from app.domain.workflows.graph import WorkflowGraph, parse_workflow_graph
@@ -127,7 +129,18 @@ class WorkflowScheduler:
         graph = parse_workflow_graph(run.graph_snapshot_json)
         nodes_by_id = {node.id: node for node in graph.nodes}
         node_runs = list_node_runs(db, run_id)
+        before_pending = {node_run.node_id for node_run in node_runs if NodeRunStatus(node_run.status) is NodeRunStatus.PENDING}
         mark_unreachable_condition_nodes(graph, node_runs)
+        for node_run in node_runs:
+            if node_run.node_id in before_pending and NodeRunStatus(node_run.status) is NodeRunStatus.SKIPPED:
+                record_event(
+                    db,
+                    workflow_run_id=run_id,
+                    node_run_id=node_run.id,
+                    event_type=RunEventType.NODE_SKIPPED,
+                    message=f"Node {node_run.node_id} skipped (inactive branch)",
+                    payload={"node_id": node_run.node_id},
+                )
         submitted: list[str] = []
         for node_id in find_ready_nodes(graph, node_runs):
             node_run = next((node_run for node_run in node_runs if node_run.node_id == node_id), None)
@@ -141,6 +154,14 @@ class WorkflowScheduler:
                 continue
             transition_node_run(NodeRunStatus(node_run.status), NodeRunStatus.QUEUED)
             node_run.status = NodeRunStatus.QUEUED.value
+            record_event(
+                db,
+                workflow_run_id=run_id,
+                node_run_id=node_run.id,
+                event_type=RunEventType.NODE_QUEUED,
+                message=f"Node {node_id} queued",
+                payload={"node_id": node_id, "node_type": node.type.value},
+            )
             max_attempts, retry_backoff_seconds = _retry_settings_for_node(
                 run,
                 node.model_dump(mode="json"),
@@ -169,8 +190,10 @@ class WorkflowScheduler:
         return submitted
 
     def reconcile_run(self, db: Session, run_id: str) -> WorkflowRunStatus | None:
-        """Idempotent reconciliation: fill missed scheduling, cancel leftover
-        work for cancelled runs, and derive/persist the WorkflowRun status."""
+        """Idempotent reconciliation: promote due waits, fill missed
+        scheduling, cancel leftover work for cancelled runs, and derive /
+        persist the WorkflowRun status. Supports RUNNING, WAITING and PAUSED
+        runs (PAUSED is frozen; WAITING resumes via promote_due_waits)."""
         run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == run_id).with_for_update())
         if run is None:
             return None
@@ -179,7 +202,11 @@ class WorkflowScheduler:
         if current is WorkflowRunStatus.CANCELLED:
             self.cancel_run_tasks(db, run_id)
             return current
-        if current is not WorkflowRunStatus.RUNNING:
+        if current in (WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED):
+            return current
+
+        self.promote_due_waits(db, run_id)
+        if current is WorkflowRunStatus.PAUSED:
             return current
 
         self.schedule_ready_nodes(db, run_id)
@@ -195,7 +222,76 @@ class WorkflowScheduler:
             if derived is WorkflowRunStatus.FAILED:
                 # Fail-fast: prevent queued parallel siblings from starting.
                 self.cancel_run_tasks(db, run_id)
+            self._workflow_event(db, run, derived, reason=self._waiting_reason(node_runs))
+        if derived is WorkflowRunStatus.RUNNING:
+            # schedule_ready_nodes only submits for RUNNING runs, so a run that
+            # just left WAITING needs its newly ready nodes submitted here.
+            self.schedule_ready_nodes(db, run_id)
+        run.waiting_reason = self._waiting_reason(node_runs) if derived is WorkflowRunStatus.WAITING else None
         return derived
+
+    @staticmethod
+    def _workflow_event(db: Session, run: WorkflowRun, derived: WorkflowRunStatus, reason: str | None) -> None:
+        mapping = {
+            WorkflowRunStatus.WAITING: RunEventType.WORKFLOW_WAITING,
+            WorkflowRunStatus.RUNNING: RunEventType.WORKFLOW_RESUMED,
+            WorkflowRunStatus.COMPLETED: RunEventType.WORKFLOW_COMPLETED,
+            WorkflowRunStatus.FAILED: RunEventType.WORKFLOW_FAILED,
+            WorkflowRunStatus.CANCELLED: RunEventType.WORKFLOW_CANCELLED,
+        }
+        event_type = mapping.get(derived)
+        if event_type is None:
+            return
+        payload = {"reason": reason} if reason else {}
+        record_event(db, workflow_run_id=run.id, event_type=event_type, message=f"Workflow {derived.value}", payload=payload)
+
+    @staticmethod
+    def _waiting_reason(node_runs: list[NodeRun]) -> str | None:
+        for node_run in node_runs:
+            if NodeRunStatus(node_run.status) is NodeRunStatus.WAITING and node_run.waiting_reason:
+                return node_run.waiting_reason
+        return None
+
+    def promote_due_waits(self, db: Session, run_id: str) -> bool:
+        """Complete WAIT_TIMER NodeRuns whose resume_at has passed."""
+        changed = False
+        for node_run in list_node_runs(db, run_id):
+            if NodeRunStatus(node_run.status) is not NodeRunStatus.WAITING:
+                continue
+            if node_run.waiting_reason != "WAIT_TIMER":
+                continue
+            metadata = node_run.waiting_metadata_json or {}
+            resume_at = metadata.get("resume_at")
+            if not isinstance(resume_at, str):
+                continue
+            try:
+                due = datetime.fromisoformat(resume_at)
+            except ValueError:
+                continue
+            if due > utc_now():
+                continue
+            transition_node_run(NodeRunStatus.WAITING, NodeRunStatus.COMPLETED)
+            node_run.status = NodeRunStatus.COMPLETED.value
+            node_run.output_json = dict(metadata)
+            node_run.finished_at = utc_now()
+            record_event(
+                db,
+                workflow_run_id=run_id,
+                node_run_id=node_run.id,
+                event_type=RunEventType.NODE_RESUMED,
+                message="Wait timer elapsed",
+                payload={"node_id": node_run.node_id, "action": "wait"},
+            )
+            record_event(
+                db,
+                workflow_run_id=run_id,
+                node_run_id=node_run.id,
+                event_type=RunEventType.NODE_COMPLETED,
+                message="Node completed after wait",
+                payload={"node_id": node_run.node_id},
+            )
+            changed = True
+        return changed
 
     def cancel_run_tasks(self, db: Session, run_id: str) -> None:
         """Cancel every non-terminal ExecutionTask and its NodeRun."""
@@ -212,6 +308,14 @@ class WorkflowScheduler:
                 transition_node_run(NodeRunStatus(node_run.status), NodeRunStatus.CANCELLED)
                 node_run.status = NodeRunStatus.CANCELLED.value
                 node_run.finished_at = utc_now()
+            record_event(
+                db,
+                workflow_run_id=run_id,
+                node_run_id=task.node_run_id,
+                event_type=RunEventType.NODE_CANCELLED,
+                message="Node cancelled",
+                payload={"node_id": task.payload_json.get("node_id") if isinstance(task.payload_json, dict) else None},
+            )
         # Cancel PENDING node runs that never received a task.
         for node_run in list_node_runs(db, run_id):
             status = NodeRunStatus(node_run.status)

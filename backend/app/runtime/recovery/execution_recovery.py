@@ -28,7 +28,9 @@ async def run_execution_recovery(
         with session_factory() as db:
             active_ids = db.scalars(
                 select(WorkflowRun.id).where(
-                    WorkflowRun.status.in_([WorkflowRunStatus.RUNNING.value, WorkflowRunStatus.PAUSED.value])
+                    WorkflowRun.status.in_(
+                        [WorkflowRunStatus.RUNNING.value, WorkflowRunStatus.PAUSED.value, WorkflowRunStatus.WAITING.value]
+                    )
                 )
             ).all()
             for run_id in active_ids:

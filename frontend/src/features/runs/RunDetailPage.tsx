@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   ApiError,
   cancelWorkflowRun,
+  getRunEvents,
   getRunExecutionTasks,
   getWorkflowRun,
   pauseWorkflowRun,
@@ -55,6 +56,34 @@ function ExecutionTasksSection({ runId }: { runId: string }) {
   );
 }
 
+function RunTimeline({ runId }: { runId: string }) {
+  const events = useQuery({ queryKey: ["run-events", runId], queryFn: () => getRunEvents(runId) });
+  if (events.isLoading) return <div className="loading-state">Loading events...</div>;
+  const list = events.data ?? [];
+  return (
+    <div className="actions-section">
+      <div className="section-heading">
+        <div><p className="eyebrow">EVENT TIMELINE</p><h4>Execution trace</h4></div>
+      </div>
+      {list.length === 0 ? (
+        <div className="mini-empty">No trace events yet.</div>
+      ) : (
+        <div className="action-list">
+          {list.map((event) => (
+            <div className="action-row" key={event.id}>
+              <span className="method-pill">{new Date(event.created_at).toLocaleTimeString()}</span>
+              <div className="action-copy">
+                <strong>{event.event_type.toUpperCase()}</strong>
+                <span>{event.message ?? ""}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
   const queryClient = useQueryClient();
   const [selectedNodeRunId, setSelectedNodeRunId] = useState<string | null>(null);
@@ -65,6 +94,18 @@ export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
     queryFn: () => getWorkflowRun(runId),
     refetchInterval: 4000,
   });
+
+  // Live SSE: any event invalidates the run + timeline queries. EventSource
+  // reconnects automatically using the SSE event id (Last-Event-ID).
+  useEffect(() => {
+    if (typeof EventSource === "undefined") return;
+    const source = new EventSource(`/api/workflow-runs/${runId}/events/stream`);
+    source.onmessage = () => {
+      void queryClient.invalidateQueries({ queryKey: ["workflow-run", runId] });
+      void queryClient.invalidateQueries({ queryKey: ["run-events", runId] });
+    };
+    return () => source.close();
+  }, [runId, queryClient]);
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["workflow-run", runId] });
@@ -170,6 +211,7 @@ export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
       </div>
 
       <ExecutionTasksSection runId={runId} />
+      <RunTimeline runId={runId} />
     </div>
   );
 }

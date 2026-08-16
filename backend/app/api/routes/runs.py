@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, Query, status
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.domain.execution.schemas import ExecutionTaskRead
 from app.domain.execution.service import list_execution_tasks
 from app.domain.runs.schemas import NodeRunRead, WorkflowRunCreate, WorkflowRunRead, WorkflowRunSummary
 from app.domain.runs.service import (
+    approve_node_run,
     cancel_run,
     create_run,
     get_node_run,
@@ -12,8 +14,10 @@ from app.domain.runs.service import (
     list_node_runs,
     list_runs,
     pause_run,
+    reject_node_run,
     resume_run,
     start_run,
+    submit_node_run,
 )
 from app.infrastructure.database.session import get_db
 from app.runtime.state_machine import WorkflowRunStatus
@@ -70,6 +74,28 @@ def get_run_node(run_id: str, node_run_id: str, db: Session = Depends(get_db)) -
 @router.get("/{run_id}/execution-tasks", response_model=list[ExecutionTaskRead])
 def get_run_execution_tasks(run_id: str, db: Session = Depends(get_db)) -> list[ExecutionTaskRead]:
     return list_execution_tasks(db, run_id)
+
+
+node_runs_router = APIRouter(prefix="/node-runs", tags=["node-runs"])
+
+
+class NodeRunSubmitRequest(BaseModel):
+    input: dict[str, object] = Field(default_factory=dict)
+
+
+@node_runs_router.post("/{node_run_id}/approve", response_model=NodeRunRead)
+def post_approve_node_run(node_run_id: str, db: Session = Depends(get_db)) -> NodeRunRead:
+    return approve_node_run(db, node_run_id)
+
+
+@node_runs_router.post("/{node_run_id}/reject", response_model=NodeRunRead)
+def post_reject_node_run(node_run_id: str, db: Session = Depends(get_db)) -> NodeRunRead:
+    return reject_node_run(db, node_run_id)
+
+
+@node_runs_router.post("/{node_run_id}/submit", response_model=NodeRunRead)
+def post_submit_node_run(node_run_id: str, payload: NodeRunSubmitRequest, db: Session = Depends(get_db)) -> NodeRunRead:
+    return submit_node_run(db, node_run_id, payload.input)
 
 
 runs_under_workflow = APIRouter(prefix="/workflows", tags=["runs"])

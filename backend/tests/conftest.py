@@ -18,8 +18,10 @@ from app.infrastructure.database.base import Base  # noqa: E402
 from app.infrastructure.database.session import get_db  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.domain.agents.model import Agent  # noqa: F401,E402
+from app.domain.artifacts.models import Artifact  # noqa: F401,E402
 from app.domain.credentials.model import Credential  # noqa: F401,E402
 from app.domain.execution.models import ExecutionTask  # noqa: F401,E402
+from app.domain.runs.events import RunEvent  # noqa: F401,E402
 from app.domain.runs.models import NodeRun, WorkflowRun  # noqa: F401,E402
 from app.domain.services.model import Service, ServiceAction  # noqa: F401,E402
 from app.domain.workflows.model import Workflow, WorkflowVersion  # noqa: F401,E402

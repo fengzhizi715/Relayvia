@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import RelayviaError
 from app.domain.agents.model import Agent
+from app.domain.runs.events import RunEventType, record_event
 from app.domain.runs.models import NodeRun, WorkflowRun
 from app.domain.runs.repository import get_run as repository_get_run
 from app.domain.runs.repository import list_node_runs as repository_list_node_runs
@@ -359,6 +360,7 @@ def start_run(db: Session, run_id: str) -> WorkflowRunRead:
     run.status = WorkflowRunStatus.RUNNING.value
     if run.started_at is None:
         run.started_at = utc_now()
+    record_event(db, workflow_run_id=run.id, event_type=RunEventType.WORKFLOW_STARTED, message="Workflow started")
     db.commit()
     # Phase 7: submit ExecutionTasks for the initial Ready Nodes.
     WorkflowScheduler().schedule_ready_nodes(db, run.id)
@@ -405,6 +407,7 @@ def cancel_run(db: Session, run_id: str) -> WorkflowRunRead:
     run.status = WorkflowRunStatus.CANCELLED.value
     run.cancelled_at = utc_now()
     run.finished_at = utc_now()
+    record_event(db, workflow_run_id=run.id, event_type=RunEventType.WORKFLOW_CANCELLED, message="Workflow cancelled")
 
     for node_run in repository_list_node_runs(db, run_id):
         node_status = NodeRunStatus(node_run.status)
@@ -442,3 +445,71 @@ def runtime_context_for_run(db: Session, run: WorkflowRun) -> RuntimeContext:
     """Rebuild the RuntimeContext for a Run (node outputs are NOT included;
     resolvers read them from NodeRun.output_json)."""
     return RuntimeContext(input_data=run.input_json, variables=run.variables_json)
+
+
+def _lock_node_run(db: Session, node_run_id: str) -> tuple[NodeRun, WorkflowRun]:
+    node_run = db.scalar(select(NodeRun).where(NodeRun.id == node_run_id).with_for_update())
+    if node_run is None:
+        raise RelayviaError("NODE_RUN_NOT_FOUND", "Node Run not found", status_code=404)
+    run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == node_run.workflow_run_id).with_for_update())
+    if run is None:  # pragma: no cover - FK invariant
+        raise RelayviaError("WORKFLOW_RUN_NOT_FOUND", "Workflow Run not found", status_code=404)
+    return node_run, run
+
+
+def _require_waiting(node_run: NodeRun) -> None:
+    if NodeRunStatus(node_run.status) is not NodeRunStatus.WAITING:
+        raise RelayviaError(
+            "NODE_RUN_NOT_WAITING",
+            "Node Run is not in a waiting state",
+            status_code=409,
+            details={"status": node_run.status},
+        )
+
+
+def approve_node_run(db: Session, node_run_id: str) -> NodeRunRead:
+    node_run, run = _lock_node_run(db, node_run_id)
+    _require_waiting(node_run)
+    transition_node_run(NodeRunStatus.WAITING, NodeRunStatus.COMPLETED)
+    node_run.status = NodeRunStatus.COMPLETED.value
+    node_run.output_json = {"approved": True}
+    node_run.finished_at = utc_now()
+    record_event(db, workflow_run_id=run.id, node_run_id=node_run.id, event_type=RunEventType.NODE_RESUMED, message="Approval approved", payload={"node_id": node_run.node_id, "action": "approve"})
+    record_event(db, workflow_run_id=run.id, node_run_id=node_run.id, event_type=RunEventType.NODE_COMPLETED, message="Node completed after approval", payload={"node_id": node_run.node_id})
+    db.commit()
+    WorkflowScheduler().reconcile_run(db, run.id)
+    db.commit()
+    db.refresh(node_run)
+    return _to_node_read(node_run)
+
+
+def reject_node_run(db: Session, node_run_id: str) -> NodeRunRead:
+    node_run, run = _lock_node_run(db, node_run_id)
+    _require_waiting(node_run)
+    transition_node_run(NodeRunStatus.WAITING, NodeRunStatus.FAILED)
+    node_run.status = NodeRunStatus.FAILED.value
+    node_run.error_json = {"code": "REJECTED", "message": "Approval was rejected", "retryable": False, "details": {}}
+    node_run.finished_at = utc_now()
+    record_event(db, workflow_run_id=run.id, node_run_id=node_run.id, event_type=RunEventType.NODE_RESUMED, message="Approval rejected", payload={"node_id": node_run.node_id, "action": "reject"})
+    record_event(db, workflow_run_id=run.id, node_run_id=node_run.id, event_type=RunEventType.NODE_FAILED, message="Node failed after rejection", payload={"node_id": node_run.node_id, "error_code": "REJECTED"})
+    db.commit()
+    WorkflowScheduler().reconcile_run(db, run.id)
+    db.commit()
+    db.refresh(node_run)
+    return _to_node_read(node_run)
+
+
+def submit_node_run(db: Session, node_run_id: str, input_data: dict) -> NodeRunRead:
+    node_run, run = _lock_node_run(db, node_run_id)
+    _require_waiting(node_run)
+    transition_node_run(NodeRunStatus.WAITING, NodeRunStatus.COMPLETED)
+    node_run.status = NodeRunStatus.COMPLETED.value
+    node_run.output_json = dict(input_data)
+    node_run.finished_at = utc_now()
+    record_event(db, workflow_run_id=run.id, node_run_id=node_run.id, event_type=RunEventType.NODE_RESUMED, message="Human input submitted", payload={"node_id": node_run.node_id, "action": "submit"})
+    record_event(db, workflow_run_id=run.id, node_run_id=node_run.id, event_type=RunEventType.NODE_COMPLETED, message="Node completed after human input", payload={"node_id": node_run.node_id})
+    db.commit()
+    WorkflowScheduler().reconcile_run(db, run.id)
+    db.commit()
+    db.refresh(node_run)
+    return _to_node_read(node_run)

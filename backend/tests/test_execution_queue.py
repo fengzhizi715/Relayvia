@@ -420,7 +420,9 @@ def test_worker_persists_sanitized_connector_trace(client, http_test_server, mem
     detail = client.get(f"/api/workflow-runs/{run['id']}").json()
     agent_run = next(node for node in detail["node_runs"] if node["node_id"] == "a")
     assert agent_run["execution_metadata"] == {"status_code": 201, "authorization": "***REDACTED***"}
-    assert agent_run["artifacts"] == [{"uri": "artifact://report-1", "type": "report", "token": "***REDACTED***"}]
+    # Success-path artifacts now go through registration: only clean references
+    # (uri/type/name) are persisted; the raw `token` field is never stored.
+    assert agent_run["artifacts"] == [{"uri": "artifact://report-1", "type": "report", "name": "artifact"}]
 
 
 def test_worker_persists_sanitized_failed_connector_trace(memory_db):

@@ -261,6 +261,68 @@ Payload 或 Error；失败结果也不含 Secret。Connector metadata 和 Artifa
   其他非终态 Task / NodeRun 取消。无法强制中断已经发出的外部 HTTP 请求，但其迟到结果
   会被已取消 Task 的 fencing 拒绝。
 
+## Human Approval / Human Input / Wait
+
+等待型节点（`human/approval`、`human/input`、`logic/wait`）由 Worker 置为**持久化
+WAITING**，然后**完成并释放 ExecutionTask**——Worker 不因等待而阻塞/占线程。
+
+- `NodeRun.waiting_reason`：`HUMAN_APPROVAL` / `HUMAN_INPUT` / `WAIT_TIMER`；
+  `waiting_metadata_json`：Wait 记录 `resume_at`（`now + duration`）。
+- 任一 NodeRun 处于 WAITING → `WorkflowRun → WAITING`（`derive_workflow_state`）。
+- **恢复驱动**：
+  - `POST /api/node-runs/{id}/approve` / `/reject`：`WAITING → COMPLETED`（approve，
+    output `{"approved": true}`）或 `WAITING → FAILED`（reject，error `REJECTED`，
+    WorkflowRun → FAILED）。随后 Scheduler reconcile 调度下游。
+  - `POST /api/node-runs/{id}/submit`：`human/input`，`WAITING → COMPLETED`，
+    `output_json = 提交内容`（下游可经 Context Resolver 引用）。
+  - Wait 到期：Scheduler `promote_due_waits()` 周期检查 `resume_at <= now` →
+    node `WAITING → COMPLETED` → 继续。V1 只实现 `mode=duration`。
+- **幂等与并发**：approve/reject/submit 以 `FOR UPDATE` 行锁 + `WAITING` 状态条件更新；
+  非 WAITING 的再次操作返回 `409 NODE_RUN_NOT_WAITING`。Wait 到期由 reconcile 幂等推进。
+- **Durability**：WAITING 是持久化 DB 状态；Worker / Backend 重启后状态不丢，恢复后继续。
+
+## Artifacts
+
+非 JSON / 大型文件类产物（image / dataset / model / patch / report ...）通过
+`artifact://<id>` 引用传递，不进入 NodeRun.output_json 正文。
+
+- **Artifact Entity**（`artifacts` 表）只存 metadata（id / workflow_run_id /
+  producer_node_run_id / type / name / uri / size / content_type / metadata）；
+  文件内容在 `ArtifactStorage`。
+- **LocalArtifactStorage**：文件存于 `data/artifacts/<id>`（`RELAYVIA_ARTIFACT_STORAGE_DIR`
+  可配置），key 严格校验（`[A-Za-z0-9_-]+` + root 限制），**防止 Path Traversal**。
+  Storage 是抽象接口，未来可换 S3 / MinIO / OSS。
+- **产生**：`ExecutionResult.artifacts` 是 Artifact Candidate——
+  `{name, type, content_type, local_path | uri, output_key, metadata}`。
+  Worker 在 success 时注册：读文件 / 外部 URI → 建 Artifact → `artifact://<id>`；
+  按 `output_key` 写入 NodeRun.output（下游可 `{{nodes.X.output.<key>}}` 引用），
+  引用列表存 `node_runs.artifact_refs_json`。Connector 不直接操作 Artifact 状态。
+- **外部 URI**（如 HTTP 返回 `artifact_url`）：注册为 external Artifact（无本地文件，
+  引用保留原始 URI）。
+- **消费**：Context Resolver 只透传 `artifact://` 引用（不读文件）；下游 ExecutionUnit
+  通过 Artifact Service 获取 metadata / open 内容。
+- **API**：`GET /api/artifacts/{id}`（metadata）、`GET /api/artifacts/{id}/content`
+  （下载；external 或无文件 → 404）。
+- **Durability**：Artifact metadata + 文件都持久化；Worker 重启后仍可访问。
+
+## Run Trace & SSE
+
+Workflow 执行过程以结构化 `RunEvent` 持久化（`run_events` 表，自增 id 提供稳定总序），
+与状态修改同事务写入。普通应用日志是开发/运维用途，RunEvent 才是执行 Trace。
+
+- **事件类型**：`WORKFLOW_STARTED/WAITING/RESUMED/COMPLETED/FAILED/CANCELLED`、
+  `NODE_QUEUED/STARTED/RETRYING/WAITING/RESUMED/COMPLETED/FAILED/SKIPPED/CANCELLED`、
+  `CONDITION_EVALUATED`（经 `NODE_COMPLETED.payload.selected_branch` 表达）。
+- **写入点**：backend（start/complete/fail/retry/wait/cancel）、scheduler（queued/skipped/
+  workflow 状态）、service（start/approve/reject/submit/cancel）——全部与状态变更同一事务。
+- **Trace API**：`GET /api/workflow-runs/{id}/events?after_id=&limit=`（增量分页）。
+- **SSE**：`GET /api/workflow-runs/{id}/events/stream` —— 轮询数据库（无 Redis），
+  推送 `id:`/`data:` 帧；客户端断线后带 `Last-Event-ID` 重连即可续传未消费事件；
+  Run 进入终态后流自然结束。数据库始终是 durable Source of Truth。
+- **安全**：事件 payload 由 Runtime 构造（不含 NodeRun output 正文），Credential /
+  Secret 不进入 Trace / SSE（复用 Phase 8/12 脱敏边界）。
+- **前端**：Run Detail 显示 Event Timeline，SSE 实时刷新 Run 与节点状态。
+
 ## Worker 与 Relayvia Runner 的区别
 
 - **Workflow Worker**：Relayvia Server 侧的执行基础设施进程。

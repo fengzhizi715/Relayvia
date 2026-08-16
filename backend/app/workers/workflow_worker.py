@@ -17,13 +17,17 @@ import signal
 import socket
 import time
 import uuid
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
+from app.domain.artifacts.service import register_artifact_candidates
 from app.domain.runs.models import NodeRun, WorkflowRun
 from app.domain.workflows.graph import parse_workflow_graph
+from app.infrastructure.artifact_storage import ArtifactStorage, get_artifact_storage
+from app.infrastructure.database.base import utc_now
 from app.infrastructure.database.session import get_session_factory
 from app.infrastructure.execution_backend.base import ClaimedTask, ExecutionBackend
 from app.infrastructure.execution_backend.mysql import MySQLExecutionBackend
@@ -84,6 +88,25 @@ def _reconcile_after(session_factory: sessionmaker[Session], scheduler: Workflow
         db.commit()
 
 
+def _waiting_for(context: NodeExecutionContext) -> tuple[str, dict] | None:
+    """Waiting-type nodes are parked, not executed: Human Approval / Human
+    Input park until an API action; Wait parks until resume_at passes."""
+    node = context.node_definition
+    if node["type"] == "human":
+        if node["subtype"] == "approval":
+            return ("HUMAN_APPROVAL", {})
+        if node["subtype"] == "input":
+            return ("HUMAN_INPUT", {})
+    if node["type"] == "logic" and node["subtype"] == "wait":
+        try:
+            duration = max(int(context.resolved_config.get("duration_seconds") or 0), 1)
+        except (TypeError, ValueError):
+            duration = 1
+        resume_at = utc_now() + timedelta(seconds=duration)
+        return ("WAIT_TIMER", {"resume_at": resume_at.isoformat(), "duration_seconds": duration})
+    return None
+
+
 async def _renew_loop(backend: ExecutionBackend, task: ClaimedTask, worker_id: str, interval: float) -> None:
     while True:
         await asyncio.sleep(interval)
@@ -102,21 +125,38 @@ async def _process_task(
     executor: NodeExecutor,
     worker_id: str,
     renew_interval: float,
+    storage: ArtifactStorage | None = None,
 ) -> None:
     started = await backend.start(task.id, worker_id, task.lease_token)
     if not started:
         return
 
-    renewer = asyncio.create_task(_renew_loop(backend, task, worker_id, renew_interval))
     try:
         context = _build_execution_context(session_factory, task)
-        result = await executor.execute(context)
     except UnresolvedContextReference as exc:
-        result = NodeExecutionResult(
-            ok=False,
-            retryable=False,
-            error=ExecutionError("UNRESOLVED_CONTEXT_REFERENCE", exc.message, details={"reference": exc.reference}),
+        await backend.fail(task.id, worker_id, task.lease_token, sanitize_error({"code": "UNRESOLVED_CONTEXT_REFERENCE", "message": exc.message, "retryable": False, "details": {"reference": exc.reference}}))
+        _reconcile_after(session_factory, scheduler, task.workflow_run_id)
+        return
+    except ExecutionError as exc:
+        await backend.fail(task.id, worker_id, task.lease_token, sanitize_error(exc.to_dict()))
+        _reconcile_after(session_factory, scheduler, task.workflow_run_id)
+        return
+
+    waiting = _waiting_for(context)
+    if waiting is not None:
+        await backend.wait_node(
+            task.id,
+            worker_id,
+            task.lease_token,
+            waiting_reason=waiting[0],
+            waiting_metadata=waiting[1],
         )
+        _reconcile_after(session_factory, scheduler, task.workflow_run_id)
+        return
+
+    renewer = asyncio.create_task(_renew_loop(backend, task, worker_id, renew_interval))
+    try:
+        result = await executor.execute(context)
     except ExecutionError as exc:
         result = NodeExecutionResult(ok=False, retryable=exc.retryable, error=exc)
     except Exception as exc:  # pragma: no cover - defensive
@@ -125,13 +165,26 @@ async def _process_task(
         renewer.cancel()
 
     if result.ok:
+        output = dict(result.output or {})
+        artifact_refs: list[dict] = []
+        if result.artifacts:
+            with session_factory() as db:
+                artifact_refs, output_keys = register_artifact_candidates(
+                    db,
+                    workflow_run_id=task.workflow_run_id,
+                    producer_node_run_id=task.node_run_id,
+                    candidates=result.artifacts,
+                    storage=storage or get_artifact_storage(),
+                )
+                db.commit()
+            output.update(output_keys)
         await backend.complete(
             task.id,
             worker_id,
             task.lease_token,
-            result.output or {},
+            output,
             execution_metadata=sanitize_metadata(result.metadata),
-            artifacts=sanitize_artifacts(result.artifacts),
+            artifacts=sanitize_artifacts(artifact_refs),
         )
         _reconcile_after(session_factory, scheduler, task.workflow_run_id)
     elif result.retryable and task.attempt + 1 < task.max_attempts:
@@ -171,6 +224,7 @@ async def run_worker(
     renew_interval: float | None = None,
     recovery_interval: float | None = None,
     worker_id: str | None = None,
+    storage: ArtifactStorage | None = None,
 ) -> None:
     settings = get_settings()
     session_factory = session_factory or get_session_factory()
@@ -211,6 +265,7 @@ async def run_worker(
             executor=executor,
             worker_id=worker_id,
             renew_interval=renew_interval,
+            storage=storage,
         )
 
 

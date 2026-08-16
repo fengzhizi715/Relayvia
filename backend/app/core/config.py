@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     worker_lease_renew_interval: float = 20.0
     worker_recovery_interval: float = 30.0
 
+    artifact_storage_dir: str = "data/artifacts"
+
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[3] / ".env",
         env_prefix="RELAYVIA_",

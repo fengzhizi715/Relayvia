@@ -394,4 +394,19 @@ export const resumeWorkflowRun = (id: string) => request<WorkflowRun>(`/api/work
 export const cancelWorkflowRun = (id: string) => request<WorkflowRun>(`/api/workflow-runs/${id}/cancel`, { method: "POST" });
 export const getNodeRuns = (runId: string) => request<NodeRun[]>(`/api/workflow-runs/${runId}/nodes`);
 export const getNodeRun = (runId: string, nodeRunId: string) => request<NodeRun>(`/api/workflow-runs/${runId}/nodes/${nodeRunId}`);
+export const approveNodeRun = (id: string) => request<NodeRun>(`/api/node-runs/${id}/approve`, { method: "POST" });
+export const rejectNodeRun = (id: string) => request<NodeRun>(`/api/node-runs/${id}/reject`, { method: "POST" });
+export const submitNodeRun = (id: string, input: Record<string, unknown>) => request<NodeRun>(`/api/node-runs/${id}/submit`, { method: "POST", body: JSON.stringify({ input }) });
+
+export type RunEvent = {
+  id: number;
+  workflow_run_id: string;
+  node_run_id: string | null;
+  event_type: string;
+  message: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+export const getRunEvents = (runId: string, afterId?: number) =>
+  request<RunEvent[]>(`/api/workflow-runs/${runId}/events${afterId ? `?after_id=${afterId}` : ""}`);
 export const getRunExecutionTasks = (runId: string) => request<ExecutionTask[]>(`/api/workflow-runs/${runId}/execution-tasks`);

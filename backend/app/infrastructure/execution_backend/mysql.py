@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.domain.execution.models import ExecutionTask
 from app.domain.execution.state_machine import ExecutionTaskStatus, is_execution_task_terminal, transition_execution_task
+from app.domain.runs.events import RunEventType, record_event
 from app.domain.runs.models import NodeRun, WorkflowRun
 from app.infrastructure.database.base import utc_now
 from app.runtime.state_machine import NodeRunStatus, WorkflowRunStatus, is_node_run_terminal, transition_node_run
@@ -107,6 +108,7 @@ class MySQLExecutionBackend(ExecutionBackend):
             task.attempt += 1
             task.started_at = utc_now()
             self._node_status(db, task.node_run_id, target=NodeRunStatus.RUNNING, allow_same=True)
+            self._trace(db, task, RunEventType.NODE_STARTED, message=f"Node started (attempt {task.attempt})", attempt=task.attempt)
             db.commit()
             return True
 
@@ -129,6 +131,10 @@ class MySQLExecutionBackend(ExecutionBackend):
             task.finished_at = utc_now()
             task.last_error_json = None
             self._node_completed(db, task.node_run_id, output, execution_metadata or {}, artifacts or [])
+            payload: dict = {}
+            if isinstance(output, dict) and "selected_branch" in output:
+                payload["selected_branch"] = output["selected_branch"]
+            self._trace(db, task, RunEventType.NODE_COMPLETED, message="Node completed", **payload)
             db.commit()
             return True
 
@@ -151,6 +157,28 @@ class MySQLExecutionBackend(ExecutionBackend):
             task.finished_at = utc_now()
             task.last_error_json = error
             self._node_failed(db, task.node_run_id, error, execution_metadata or {}, artifacts or [])
+            self._trace(db, task, RunEventType.NODE_FAILED, message=error.get("message") if isinstance(error, dict) else None, error_code=error.get("code") if isinstance(error, dict) else None)
+            db.commit()
+            return True
+
+    async def wait_node(self, task_id: str, worker_id: str, lease_token: str, *, waiting_reason: str, waiting_metadata: dict) -> bool:
+        """A waiting node (Human Approval / Human Input / Wait timer) finishes
+        its scheduling work and parks the NodeRun in a durable WAITING state.
+        The ExecutionTask completes so the Worker never blocks on it."""
+        with self._session_factory() as db:
+            task = db.scalar(select(ExecutionTask).where(ExecutionTask.id == task_id).with_for_update())
+            if not self._owns(db, task, worker_id, lease_token):
+                return False
+            transition_execution_task(ExecutionTaskStatus(task.status), ExecutionTaskStatus.COMPLETED)
+            task.status = ExecutionTaskStatus.COMPLETED.value
+            task.finished_at = utc_now()
+            node_run = db.get(NodeRun, task.node_run_id)
+            if node_run is not None:
+                transition_node_run(NodeRunStatus(node_run.status), NodeRunStatus.WAITING)
+                node_run.status = NodeRunStatus.WAITING.value
+                node_run.waiting_reason = waiting_reason
+                node_run.waiting_metadata_json = waiting_metadata
+            self._trace(db, task, RunEventType.NODE_WAITING, message=f"Node waiting ({waiting_reason})", reason=waiting_reason, **waiting_metadata)
             db.commit()
             return True
 
@@ -168,6 +196,7 @@ class MySQLExecutionBackend(ExecutionBackend):
             task.lease_expires_at = None
             task.last_error_json = task.last_error_json
             self._node_status(db, task.node_run_id, target=NodeRunStatus.RETRYING, allow_same=True)
+            self._trace(db, task, RunEventType.NODE_RETRYING, message=f"Node retrying in {backoff_seconds}s", attempt=task.attempt, backoff_seconds=backoff_seconds)
             db.commit()
             return True
 
@@ -189,6 +218,7 @@ class MySQLExecutionBackend(ExecutionBackend):
             task.status = ExecutionTaskStatus.CANCELLED.value
             task.finished_at = utc_now()
             self._node_cancelled(db, task.node_run_id)
+            self._trace(db, task, RunEventType.NODE_CANCELLED, message="Node cancelled")
             db.commit()
             return True
 
@@ -228,11 +258,24 @@ class MySQLExecutionBackend(ExecutionBackend):
                 transition_execution_task(ExecutionTaskStatus(task.status), ExecutionTaskStatus.PENDING)
                 task.status = ExecutionTaskStatus.PENDING.value
                 self._node_status(db, task.node_run_id, target=NodeRunStatus.QUEUED, allow_same=True)
+                self._trace(db, task, RunEventType.NODE_QUEUED, message="Node requeued after retry delay")
                 count += 1
             db.commit()
             return count
 
     # --- helpers ---
+
+    @staticmethod
+    def _trace(db: Session, task: ExecutionTask, event_type: RunEventType, message: str | None = None, **payload) -> None:
+        node_id = task.payload_json.get("node_id") if isinstance(task.payload_json, dict) else None
+        record_event(
+            db,
+            workflow_run_id=task.workflow_run_id,
+            node_run_id=task.node_run_id,
+            event_type=event_type,
+            message=message,
+            payload={"node_id": node_id, **payload},
+        )
 
     @staticmethod
     def _owns(db: Session, task: ExecutionTask | None, worker_id: str, lease_token: str) -> bool:
