@@ -7,6 +7,7 @@ import {
   type Agent,
   type AgentPayload,
   type Credential,
+  type Runner,
   type Capability,
   updateAgent,
 } from "../../api/client";
@@ -16,6 +17,7 @@ import { Modal } from "../../components/Modal";
 type AgentFormProps = {
   agent?: Agent;
   credentials: Credential[];
+  runners: Runner[];
   onClose: () => void;
   onSaved: () => void;
 };
@@ -60,7 +62,7 @@ function parseCapabilities(value: string): Capability[] {
   return parsed as Capability[];
 }
 
-export function AgentForm({ agent, credentials, onClose, onSaved }: AgentFormProps) {
+export function AgentForm({ agent, credentials, runners, onClose, onSaved }: AgentFormProps) {
   const [name, setName] = useState(agent?.name ?? "");
   const [description, setDescription] = useState(agent?.description ?? "");
   const [connectorType, setConnectorType] = useState(agent?.connector_type ?? "http");
@@ -68,6 +70,8 @@ export function AgentForm({ agent, credentials, onClose, onSaved }: AgentFormPro
   const [httpMethod, setHttpMethod] = useState(agent?.http_method ?? "POST");
   const [healthCheckUrl, setHealthCheckUrl] = useState(agent?.health_check_url ?? "");
   const [credentialId, setCredentialId] = useState(agent?.credential_id ?? "");
+  const [runnerId, setRunnerId] = useState(agent?.runner_id ?? "");
+  const [executable, setExecutable] = useState(agent?.executable ?? "");
   const [timeout, setTimeout] = useState(String(agent?.timeout_seconds ?? 30));
   const [headers, setHeaders] = useState(objectJson(agent?.headers));
   const [capabilities, setCapabilities] = useState(objectJson(agent?.capabilities ?? []));
@@ -98,6 +102,8 @@ export function AgentForm({ agent, credentials, onClose, onSaved }: AgentFormPro
         input_schema: parseObject(inputSchema, "Input schema"),
         output_schema: parseObject(outputSchema, "Output schema"),
         credential_id: credentialId || null,
+        runner_id: runnerId || undefined,
+        executable: executable || undefined,
         timeout_seconds: Number(timeout),
         enabled: agent?.enabled ?? true,
         metadata: parseObject(metadata, "Metadata"),
@@ -115,21 +121,24 @@ export function AgentForm({ agent, credentials, onClose, onSaved }: AgentFormPro
           <p className="form-section-title">Basic information</p>
           <div className="form-grid">
             <label className="field"><span>Name</span><input className="input" required value={name} onChange={(event) => setName(event.target.value)} placeholder="Code Review Agent" /></label>
-            <label className="field"><span>Connector type</span><select className="input" value={connectorType} onChange={(event) => setConnectorType(event.target.value as typeof connectorType)}><option value="http">HTTP</option><option value="local">Local (metadata only)</option><option value="custom">Custom (metadata only)</option></select></label>
+            <label className="field"><span>Connector type</span><select className="input" value={connectorType} onChange={(event) => setConnectorType(event.target.value as typeof connectorType)}><option value="http">HTTP</option><option value="codex">Codex via Runner</option><option value="local">Local (metadata only)</option><option value="custom">Custom (metadata only)</option></select></label>
           </div>
           <label className="field"><span>Description</span><textarea className="input" rows={2} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What this existing agent does" /></label>
         </div>
 
         <div className="form-section">
           <p className="form-section-title">Connection</p>
-          <div className="form-grid">
+          {connectorType === "http" ? <div className="form-grid">
             <label className="field field--wide"><span>Endpoint</span><input className="input" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="https://agent.example.com/invoke" /></label>
             <label className="field"><span>HTTP method</span><select className="input" value={httpMethod} onChange={(event) => setHttpMethod(event.target.value as typeof httpMethod)}><option>POST</option><option>GET</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></label>
             <label className="field field--wide"><span>Health check URL</span><input className="input" value={healthCheckUrl} onChange={(event) => setHealthCheckUrl(event.target.value)} placeholder="https://agent.example.com/health" /></label>
             <label className="field"><span>Timeout (seconds)</span><input className="input" min={1} max={3600} type="number" value={timeout} onChange={(event) => setTimeout(event.target.value)} /></label>
-          </div>
-          <label className="field"><span>Credential</span><select className="input" value={credentialId} onChange={(event) => setCredentialId(event.target.value)}><option value="">No credential</option>{credentials.map((credential) => <option key={credential.id} value={credential.id}>{credential.name} · {credential.type}</option>)}</select></label>
-          <JsonEditor label="Headers" value={headers} onChange={setHeaders} rows={3} hint="Do not put API keys or bearer tokens here; use a Credential." />
+          </div> : connectorType === "codex" ? <div className="form-grid">
+            <label className="field field--wide"><span>Runner</span><select className="input" required value={runnerId} onChange={(event) => setRunnerId(event.target.value)}><option value="">Select a Runner</option>{runners.map((runner) => <option key={runner.id} value={runner.id}>{runner.name} · {runner.status} · {runner.capabilities.join(", ")}</option>)}</select></label>
+            <label className="field field--wide"><span>Codex executable</span><input className="input" value={executable} onChange={(event) => setExecutable(event.target.value)} placeholder="codex (default, resolved on the Runner)" /></label>
+            <label className="field"><span>Timeout (seconds)</span><input className="input" min={1} max={3600} type="number" value={timeout} onChange={(event) => setTimeout(event.target.value)} /></label>
+          </div> : <label className="field"><span>Timeout (seconds)</span><input className="input" min={1} max={3600} type="number" value={timeout} onChange={(event) => setTimeout(event.target.value)} /></label>}
+          {connectorType === "http" && <><label className="field"><span>Credential</span><select className="input" value={credentialId} onChange={(event) => setCredentialId(event.target.value)}><option value="">No credential</option>{credentials.map((credential) => <option key={credential.id} value={credential.id}>{credential.name} · {credential.type}</option>)}</select></label><JsonEditor label="Headers" value={headers} onChange={setHeaders} rows={3} hint="Do not put API keys or bearer tokens here; use a Credential." /></>}
         </div>
 
         <div className="form-section">
@@ -146,4 +155,3 @@ export function AgentForm({ agent, credentials, onClose, onSaved }: AgentFormPro
     </Modal>
   );
 }
-

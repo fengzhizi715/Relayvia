@@ -69,8 +69,8 @@ def chain_graph() -> dict:
         "schema_version": "1.0",
         "nodes": [
             {"id": "input", "type": "data", "subtype": "input", "name": "Input", "position": {"x": 0, "y": 0}, "config": {"schema": {"type": "object"}}, "input_mapping": {}, "metadata": {}},
-            {"id": "tool_a", "type": "tool", "subtype": "shell", "name": "Tool A", "position": {"x": 100, "y": 0}, "config": {"command": "echo", "timeout_seconds": 10}, "input_mapping": {}, "metadata": {}},
-            {"id": "tool_b", "type": "tool", "subtype": "shell", "name": "Tool B", "position": {"x": 200, "y": 0}, "config": {"command": "echo", "timeout_seconds": 10}, "input_mapping": {"report": "{{nodes.tool_a.output.report}}"}, "metadata": {}},
+            {"id": "tool_a", "type": "agent", "subtype": "agent", "name": "Tool A", "position": {"x": 100, "y": 0}, "config": {"agent_id": "agent-1"}, "input_mapping": {}, "metadata": {}},
+            {"id": "tool_b", "type": "agent", "subtype": "agent", "name": "Tool B", "position": {"x": 200, "y": 0}, "config": {"agent_id": "agent-1"}, "input_mapping": {"report": "{{nodes.tool_a.output.report}}"}, "metadata": {}},
             {"id": "output", "type": "data", "subtype": "output", "name": "Output", "position": {"x": 300, "y": 0}, "config": {"output_mapping": {}}, "input_mapping": {}, "metadata": {}},
         ],
         "edges": [

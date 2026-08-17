@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({
   getAgents: vi.fn(),
   getCredentials: vi.fn(),
+  getRunners: vi.fn(),
   testAgent: vi.fn(),
   updateAgent: vi.fn(),
   deleteAgent: vi.fn(),
@@ -28,6 +29,7 @@ const agent = {
   health_check_url: "http://localhost:9001/health",
   headers: {},
   runner_id: null,
+  executable: null,
   capabilities: [],
   input_schema: {},
   output_schema: {},
@@ -53,6 +55,7 @@ describe("AgentsPage", () => {
   it("runs a connection test and confirms deletion", async () => {
     api.getAgents.mockResolvedValue([agent]);
     api.getCredentials.mockResolvedValue([]);
+    api.getRunners.mockResolvedValue([]);
     api.testAgent.mockResolvedValue({ status: "healthy", latency_ms: 10, checked_at: "2026-08-15T00:00:00Z", error_code: null, message: "Connection successful" });
     api.updateAgent.mockResolvedValue({ ...agent, enabled: false });
     api.deleteAgent.mockResolvedValue(undefined);

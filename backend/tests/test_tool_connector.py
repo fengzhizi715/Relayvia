@@ -7,6 +7,8 @@ from sqlalchemy import select
 
 from app.connectors.tools.base import ToolInvocationConfig
 from app.connectors.tools.shell import ShellToolConnector
+from app.domain.execution.models import ExecutionTask
+from app.domain.execution.state_machine import ExecutionTaskStatus
 from app.domain.runs.models import NodeRun, WorkflowRun
 from app.domain.workflows.model import Workflow, WorkflowVersion
 from app.infrastructure.execution_backend.mysql import MySQLExecutionBackend
@@ -80,7 +82,9 @@ def make_tool_run(db, graph: dict):
     return run
 
 
-def test_tool_node_fails_without_runner(memory_db):
+def test_tool_node_waits_for_runner(memory_db):
+    """Tool tasks require a Runner capability; the server Worker never claims
+    them, so the Run waits rather than failing."""
     _, factory = memory_db
     with factory() as db:
         run = make_tool_run(db, tool_graph())
@@ -103,7 +107,10 @@ def test_tool_node_fails_without_runner(memory_db):
 
     with factory() as db:
         refreshed = db.get(WorkflowRun, run_id)
-        assert refreshed.status == WorkflowRunStatus.FAILED.value
+        # No Runner present: the run stays RUNNING, waiting for one.
+        assert refreshed.status == WorkflowRunStatus.RUNNING.value
         tool_run = db.scalar(select(NodeRun).where(NodeRun.workflow_run_id == run_id, NodeRun.node_id == "t"))
-        assert tool_run.status == NodeRunStatus.FAILED.value
-        assert tool_run.error_json["code"] == "RUNNER_REQUIRED"
+        assert tool_run.status == NodeRunStatus.QUEUED.value
+        task = db.scalar(select(ExecutionTask).where(ExecutionTask.workflow_run_id == run_id))
+        assert task.required_capability == "shell"
+        assert task.status == ExecutionTaskStatus.PENDING.value

@@ -42,6 +42,12 @@ class ExecutionTask(TimestampMixin, Base):
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Runner-targeted tasks: a specific runner id (optional) and the
+    # capability required to execute it. Tasks with a required capability are
+    # claimed by Runners, never by the server Worker.
+    runner_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("runners.id", ondelete="RESTRICT"), nullable=True, index=True)
+    required_capability: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+
     execution_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     last_error_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 

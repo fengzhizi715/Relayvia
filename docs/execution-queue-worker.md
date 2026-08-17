@@ -196,8 +196,8 @@ ExecutionResult: status(success|failed), output, artifacts, metadata, retryable,
 - **Agent / Service**：`HTTPAgentConnector` / `HTTPServiceConnector` 接收
   `HTTPInvocationConfig`（url / method / headers / body / query / timeout /
   credential / retry_on_status），返回 `ExecutionResult`。
-- **Tool**：`ToolInvocationConfig` 是未来 Runner dispatch 的契约。当前没有已注册
-  Runner 时，Tool Node 返回明确的 `RUNNER_REQUIRED`；Workflow Worker 不会创建
+- **Tool**：`ToolInvocationConfig` 是 Runner dispatch 的契约。Tool Node 必须指定目标
+  `runner_id`，由具备 `shell` capability 的该 Runner 执行；Workflow Worker 不会创建
   shell 子进程，也不会继承 Server 环境变量执行用户命令。
 - Connector 只调用外部能力并报告结果；**不修改 WorkflowRun / NodeRun 状态、不调度
   下一个 Node、不决定 Retry**。这些全部由 Runtime 负责。
@@ -326,6 +326,87 @@ Workflow 执行过程以结构化 `RunEvent` 持久化（`run_events` 表，自�
   Secret 不进入 Trace / SSE（复用 Phase 8/12 脱敏边界）。
 - **前端**：Run Detail 显示 Event Timeline，SSE 实时刷新 Run 与节点状态。
 
+## Relayvia Runner
+
+Tool 节点（shell / git / test_command）不再由 Server Worker 或 FastAPI 执行，而是由
+**独立 Runner 进程**（`python -m app.runners.runner` / `./run-runner.sh`）拉取并执行。
+
+- **边界**：Runner 只接收任务、执行本地命令、返回 `ExecutionResult`；不解析 Workflow
+  Graph、不调度 Node、不修改 Workflow 状态（状态由 Backend Runtime 负责）。
+- **Registry / 心跳**：首次 `POST /api/runners/register` 会一次性返回 enrollment token；
+  Runner 将其以 `0600` 本地 identity 文件保存。重启后携带 `runner_id` + token
+  重新注册；`heartbeat` / `claim` / `submit-result` 均必须带
+  `X-Relayvia-Runner-Token`。数据库仅保存 token 的 SHA-256 hash。心跳更新
+  `last_seen_at` 并续约该 Runner 名下 RUNNING 任务的 Lease。OFFLINE 由
+  `last_seen_at` 超过 `RELAYVIA_RUNNER_OFFLINE_SECONDS`（默认 60s）判定。
+- **拉取执行**：`POST /api/runners/{id}/claim`（Backend 选 capability 匹配、未指定其他
+  Runner 的任务，claim 即 RUNNING）、执行、`POST /api/runners/{id}/submit-result`
+  （Backend 注册 Artifact、更新 NodeRun、reconcile 调度下游）。
+- **Capability 与定向**：`execution_tasks.required_capability`（Tool → `shell`）和
+  `runner_id` 同时参与 claim。Tool Node 必须显式指定 `config.runner_id`；Codex Agent
+  使用 Registry 的 `agent.runner_id`。创建 Run 时先检查目标 Runner 在线且拥有所需
+  Capability，避免本地路径被另一台机器领取。
+- **Task 解析**：Backend 在调度时已用 ContextResolver 把 Tool config（command / cwd /
+  timeout）解析进 task payload，Runner 不需要 Graph / Context。
+- **安全**：`RELAYVIA_RUNNER_ROOT` 是必填项；所有命令在其下运行，working directory
+  路径逃逸会被拒绝。Runner 不接收 Backend Credential（Secret 不外发）。每个命令使用
+  独立进程组，超时时会终止整组子进程；stdout/stderr 截断并对常见 secret 形式脱敏。
+  Artifact 通过 base64 `content` 回传，Backend 注册（复用 Artifact Service）。
+- **Runner Lost / Retry**：任务 RUNNING 后 Runner 掉线 → Lease 过期 →
+  `recover_expired` 回 PENDING → 可被同一目标 Runner 重领（at-least-once）。所有
+  submit 都严格检查 lease expiry；retryable 失败按 Task 的 max attempts / backoff
+  进入 `RETRY_WAIT`，与 Server Worker 使用同一状态语义。
+
+## Workspace Manager
+
+Coding 场景的隔离工作目录：Tool 节点可声明 `workspace`（repository + strategy），
+由 Runner 在本地准备，并行 Node 不再共享同一工作树。
+
+- **Workspace Entity**（`workspaces` 表）：name / runner_id / repository / path /
+  branch / base_branch / workspace_type(local_repository|git_worktree) / status
+  (creating|ready|in_use|failed|released) / workflow_run_id / node_run_id。
+- **Contract**：`ToolNodeConfig.workspace = {repository, strategy, base_branch}`。
+- **创建**：Scheduler 在调度 Tool/Coding Agent 节点时创建 Workspace 记录（CREATING），把
+  workspace 配置放入 task payload；实际 git 操作由 Runner 执行（Backend 不碰 Runner
+  文件系统）。
+- **Branch**：`relayvia/<run_id[:12]>/<node_id>`（每 Run/Node 唯一，互不冲突）。
+- **Runner 准备**：`git worktree add -b <branch> <root>/worktrees/<branch>`（branch
+  已存在则 attach）；`local` 策略复用主仓库。Repository 必须位于
+  `RELAYVIA_RUNNER_ROOT` 内且是合法 Git 仓库（路径逃逸拒绝）。
+- **隔离**：并行分支各自 worktree（不同 branch/path），主仓库不被直接修改。
+- **Diff / Patch**：命令执行后 Runner 自动生成 `git diff HEAD`（含 untracked，
+  intent-to-add）patch 作为 Artifact（`patch.diff`，`output_key=patch`）回传注册。
+- **回写**：Runner claim 时写入 `runner_id` 并标为 IN_USE；submit-result 时 Backend
+  更新 path/branch/status（成功→released，失败→failed）。手动 release 只能处理非活动
+  Workspace；清理策略：Run 完成后保留 worktree 供 Trace/调试，不自动删除。
+- **API**：`GET /api/workspaces`、`GET /api/workspaces/{id}`、
+  `POST /api/workspaces/{id}/release`。
+
+## Coding Agent Adapter
+
+Coding Agent（Codex / OpenCode / Cursor）作为 **Agent Connector** 通过 Runner +
+Workspace 执行；不是新的 Workflow Node Type（Runtime 只认识 `agent` 节点 +
+Registry 的 `connector_type`）。
+
+- **Adapter**：`connectors/agents/coding.py` —— `CodingAgentConnector`（标记基类）+
+  `CodexConnector`（`build_command`：`<executable> exec --json <task>`，CLI 行为留在
+  Adapter）+ `detect_coding_agent_capabilities()`（`shutil.which`，只上报真实安装的
+  CLI）。OpenCode / Cursor 类型已保留在 Registry 枚举，Adapter 接口就绪但 V1 未
+  production 实现（如实记录）。
+- **调度**：Scheduler 对 `connector_type=codex` 的 Agent 节点用 ContextResolver 解析
+  `task_template`，构造 Codex 命令（`executable` 取 Registry/默认 `codex`）放入 task
+  payload，`required_capability="codex"` 与 Registry `runner_id`，并按其 `workspace`
+  配置创建同一 Runner 绑定的 Workspace。
+- **执行**：Runner 检测 codex 并上报 `codex` capability；claim 匹配的 coding-agent
+  任务，在 Workspace（worktree）内执行命令，自动生成 `git diff` patch Artifact，
+  返回 `ExecutionResult`（summary/exit_code/patch）。Backend 注册 patch、更新
+  Workspace/NodeRun、reconcile 下游。
+- **边界**：Coding Agent Adapter 不解析 `{{}}`（Context 在 Backend 解析）、不修改
+  Workflow 状态、不调度、不决定 Retry；超时/失败沿用 Runner 通用机制（进程终止 →
+  Failed → Runtime Retry）。
+- **安全**：Coding Agent 运行在 Runner Root / Workspace 内；不接收 Backend
+  Credential；Secret 不进入 Trace/Artifact。
+
 ## Worker 与 Relayvia Runner 的区别
 
 - **Workflow Worker**：Relayvia Server 侧的执行基础设施进程。
@@ -334,10 +415,10 @@ Workflow 执行过程以结构化 `RunEvent` 持久化（`run_events` 表，自�
 
 ## 当前边界
 
-尚未实现：Codex/Cursor/OpenCode Adapter、Local/Custom Agent、Relayvia Runner dispatch、
-Router 与远程 Artifact Storage（S3 / MinIO / OSS）。Human Approval / Human Input、
-Wait Timer、Run Trace + SSE 与 Local Artifact Storage 已实现。HTTP Agent / HTTP Service
-已可执行；Tool Node 在 Runner 完成前明确拒绝执行。
+已实现：Relayvia Runner dispatch、Codex Adapter、Tool / Codex Worktree 执行。尚未实现：
+OpenCode/Cursor Adapter、Local/Custom Agent 执行、Router Runtime，以及远程 Artifact
+Storage（S3 / MinIO / OSS）。Human Approval / Human Input、Wait Timer、Run Trace + SSE 与
+Local Artifact Storage 已实现。
 
 ## 配置
 
@@ -349,4 +430,6 @@ RELAYVIA_WORKER_LEASE_RENEW_INTERVAL (默认 20)
 RELAYVIA_WORKER_RECOVERY_INTERVAL   (默认 30)
 RELAYVIA_ARTIFACT_STORAGE_DIR        (默认 data/artifacts)
 RELAYVIA_ARTIFACT_MAX_BYTES          (默认 104857600)
+RELAYVIA_RUNNER_ROOT                 (Runner 必填；本地仓库与 worktree 的上级目录)
+RELAYVIA_RUNNER_ID_FILE              (默认 ~/.relayvia/runner.json，权限 0600)
 ```

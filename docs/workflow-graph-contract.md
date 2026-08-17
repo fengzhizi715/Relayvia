@@ -97,8 +97,9 @@ V1 `type` 只有：`agent`、`service`、`tool`、`logic`、`human`、`data`。
 }
 ```
 
-Tool Contract 必须由 Relayvia Runner 执行。当前未实现 Runner dispatch，运行 Tool
-Node 会返回 `RUNNER_REQUIRED`，不会在 Server Worker 中执行命令。
+Tool Contract 必须由 Relayvia Runner 执行。`config.runner_id` 是运行前必填的目标
+Runner 引用；Run 创建时会验证该 Runner 在线且具备 `shell` Capability。Server Worker
+不会执行命令。
 
 ### Logic
 

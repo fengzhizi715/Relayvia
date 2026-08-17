@@ -33,7 +33,15 @@ export function ToolInspector({ node }: { node: WorkflowNode }) {
           placeholder={node.subtype === "git" ? "git status" : "pytest"}
         />
       </Field>
-      <Field label="Working directory" hint="Optional. Phase 4 only saves the Contract; no command is executed.">
+      <Field label="Runner ID" hint="Required before a Tool node can run. Pin local commands to the Runner that owns the working directory.">
+        <TextField
+          value={(node.config.runner_id as string) ?? ""}
+          onChange={(runner_id) => setConfig({ runner_id: runner_id || null })}
+          disabled={readOnly}
+          placeholder="Runner ID from the Runners page"
+        />
+      </Field>
+      <Field label="Working directory" hint="Optional. Paths must remain inside the assigned Runner Root.">
         <TextField
           value={(node.config.working_directory as string) ?? ""}
           onChange={(working_directory) => setConfig({ working_directory: working_directory || null })}

@@ -27,6 +27,8 @@ class SnapshotAgent:
     input_schema: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] = field(default_factory=dict)
     credential_id: str | None = None
+    runner_id: str | None = None
+    executable: str | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,8 @@ def _agent(agent: SnapshotAgent) -> dict[str, Any]:
         "input_schema": agent.input_schema,
         "output_schema": agent.output_schema,
         "credential_id": agent.credential_id,
+        "runner_id": agent.runner_id,
+        "executable": agent.executable,
     }
 
 

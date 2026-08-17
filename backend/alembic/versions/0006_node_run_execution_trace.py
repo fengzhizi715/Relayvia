@@ -30,8 +30,8 @@ def upgrade() -> None:
     op.add_column("node_runs", sa.Column("execution_metadata_json", sa.JSON(), nullable=True))
     op.add_column("node_runs", sa.Column("artifact_refs_json", sa.JSON(), nullable=True))
     op.execute("UPDATE node_runs SET execution_metadata_json = '{}', artifact_refs_json = '[]'")
-    op.alter_column("node_runs", "execution_metadata_json", nullable=False)
-    op.alter_column("node_runs", "artifact_refs_json", nullable=False)
+    op.alter_column("node_runs", "execution_metadata_json", nullable=False, existing_type=sa.JSON())
+    op.alter_column("node_runs", "artifact_refs_json", nullable=False, existing_type=sa.JSON())
 
 
 def downgrade() -> None:

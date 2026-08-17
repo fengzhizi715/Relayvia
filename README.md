@@ -2,7 +2,7 @@
 
 Relayvia 是一个连接、编排、执行和追踪已有 Agent 与 Service 的平台。
 
-当前实现到 Phase 13：Agent/Service Registry、Credential Reference、Workflow Graph 1.0、不可变 Workflow Version、可视化 Workflow Builder、Validation Engine、Workflow Run / Node Run + Runtime State Machine、**MySQL-backed Execution Queue + Scheduler + 独立 Worker**、**Execution Unit + Connector**、**Context / Variable Mapping**、**Condition / Parallel / Merge**、**Human Approval + Human Input + Wait / Resume**、**Artifact**，以及 **Run Trace + SSE**（持久化 `RunEvent`、事件与状态同事务、`after_id` 增量 Trace API、DB 轮询 SSE 实时推送 + 断线续传、前端 Timeline 实时刷新；Credential 不进入 Trace/SSE）。
+当前实现到 Phase 16：Agent/Service Registry、Credential Reference、Workflow Graph 1.0、不可变 Workflow Version、可视化 Workflow Builder、Validation Engine、Workflow Run / Node Run + Runtime State Machine、**MySQL-backed Execution Queue + Scheduler + 独立 Worker**、**Execution Unit + Connector**、**Context / Variable Mapping**、**Condition / Parallel / Merge**、**Human Approval + Human Input + Wait / Resume**、**Artifact**、**Run Trace + SSE**、**Relayvia Runner**、**Workspace Manager**，以及 **Coding Agent Adapter**（Codex 作为 Agent Connector：Scheduler 解析 task 构造 CLI 命令 → Runner 在 Workspace/Worktree 内执行 → git diff patch Artifact → NodeRun completed；Capability 检测、OpenCode/Cursor 类型保留）。
 
 Execution Queue 文档：[`docs/execution-queue-worker.md`](docs/execution-queue-worker.md)
 Runtime 状态机文档：[`docs/workflow-runtime-state-machine.md`](docs/workflow-runtime-state-machine.md)
@@ -72,6 +72,9 @@ npm run dev
 # 启动 Worker（MySQL-backed Execution Queue 消费者）
 ./run-worker.sh
 
+# 启动本地/内网 Runner（必须设置其允许访问的根目录）
+RELAYVIA_RUNNER_ROOT=/absolute/path/to/runner-root ./run-runner.sh
+
 # 仅启动前端
 ./run-frontend.sh
 ```
@@ -83,6 +86,7 @@ RELAYVIA_WORKER_POLL_INTERVAL=0.5
 RELAYVIA_WORKER_LEASE_SECONDS=60
 RELAYVIA_WORKER_LEASE_RENEW_INTERVAL=20
 RELAYVIA_WORKER_RECOVERY_INTERVAL=30
+RELAYVIA_RUNNER_ROOT=/absolute/path/to/runner-root
 ```
 
 可通过环境变量覆盖默认地址和端口：

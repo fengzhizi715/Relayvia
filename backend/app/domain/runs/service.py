@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import RelayviaError
 from app.domain.agents.model import Agent
+from app.domain.runners.models import Runner, RunnerStatus, runner_online
 from app.domain.runs.events import RunEventType, record_event
 from app.domain.runs.models import NodeRun, WorkflowRun
 from app.domain.runs.repository import get_run as repository_get_run
@@ -25,6 +26,7 @@ from app.domain.workflows.graph import NodeType, WorkflowGraph, parse_workflow_g
 from app.domain.workflows.model import Workflow, WorkflowVersion
 from app.domain.workflows.validation_service import referenced_registry_ids
 from app.infrastructure.database.base import utc_now
+from app.core.config import get_settings
 from app.runtime.context import RuntimeContext
 from app.runtime.readiness.validator import check_run_readiness
 from app.runtime.snapshot.builder import (
@@ -147,6 +149,8 @@ def _build_execution_snapshot(agents: dict[str, Agent], services: dict[str, Serv
                 input_schema=agent.input_schema_json or {},
                 output_schema=agent.output_schema_json or {},
                 credential_id=agent.credential_id,
+                runner_id=agent.runner_id,
+                executable=agent.executable,
             )
             for agent in agents.values()
         ],
@@ -280,6 +284,51 @@ def _to_read(db: Session, run: WorkflowRun, node_runs: list[NodeRun] | None = No
     )
 
 
+def _validate_runner_targets(db: Session, graph: WorkflowGraph, agents: dict[str, Agent]) -> list[str]:
+    """Require every local execution to be pinned to an eligible Runner.
+
+    A repository path is meaningful only on the machine that owns it.  Random
+    capability matching is safe for stateless remote work, but not for shell
+    commands or Coding Agents, so local work is deliberately fail-closed.
+    """
+    errors: list[str] = []
+    checked: set[tuple[str, str, str]] = set()
+    for node in graph.nodes:
+        runner_id: str | None = None
+        capability: str | None = None
+        if node.type is NodeType.TOOL:
+            candidate = node.config.get("runner_id")
+            runner_id = candidate if isinstance(candidate, str) and candidate else None
+            capability = "shell"
+        elif node.type is NodeType.AGENT:
+            agent_id = node.config.get("agent_id")
+            agent = agents.get(agent_id) if isinstance(agent_id, str) else None
+            if agent is not None and agent.connector_type == "codex":
+                runner_id = agent.runner_id
+                capability = "codex"
+        if capability is None:
+            continue
+        if not runner_id:
+            errors.append(f"Node {node.id} requires an explicitly assigned Runner")
+            continue
+        key = (node.id, runner_id, capability)
+        if key in checked:
+            continue
+        checked.add(key)
+        runner = db.get(Runner, runner_id)
+        if runner is None:
+            errors.append(f"Node {node.id} references Runner {runner_id}, which does not exist")
+            continue
+        if runner.status == RunnerStatus.DISABLED.value or not runner_online(
+            runner, offline_after_seconds=get_settings().runner_offline_seconds
+        ):
+            errors.append(f"Runner {runner.name} for node {node.id} is not online")
+            continue
+        if capability not in set(runner.capabilities_json or []):
+            errors.append(f"Runner {runner.name} for node {node.id} lacks capability {capability}")
+    return errors
+
+
 def create_run(db: Session, workflow_id: str, payload: WorkflowRunCreate) -> WorkflowRunRead:
     workflow = _get_workflow(db, workflow_id)
     version = _resolve_version(db, workflow, payload)
@@ -287,12 +336,13 @@ def create_run(db: Session, workflow_id: str, payload: WorkflowRunCreate) -> Wor
 
     agents, services, actions = _load_registry(db, graph)
     readiness = check_run_readiness(graph, _registry_context(graph, agents, services, actions))
-    if not readiness.valid:
+    runner_errors = _validate_runner_targets(db, graph, agents)
+    if not readiness.valid or runner_errors:
         raise RelayviaError(
             "RUN_READINESS_FAILED",
             "Referenced capabilities are not ready to run",
             status_code=409,
-            details={"errors": readiness.errors, "warnings": readiness.warnings},
+            details={"errors": [*readiness.errors, *runner_errors], "warnings": readiness.warnings},
         )
 
     _validate_run_input(graph, payload.input)

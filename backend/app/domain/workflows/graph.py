@@ -90,6 +90,17 @@ class RetryConfig(BaseModel):
     max_retries: int = Field(default=0, ge=0, le=10)
 
 
+class ToolWorkspaceConfig(BaseModel):
+    """Optional workspace for a Node: a local repository (shared) or a
+    dedicated Git worktree (isolated per Node/Run)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repository: str = Field(min_length=1, max_length=2048)
+    strategy: Literal["local", "worktree"] = "worktree"
+    base_branch: str | None = Field(default=None, max_length=255)
+
+
 class AgentNodeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -98,6 +109,7 @@ class AgentNodeConfig(BaseModel):
     task_template: str | None = None
     timeout_seconds: int = Field(default=600, ge=1, le=86400)
     retry: RetryConfig = Field(default_factory=RetryConfig)
+    workspace: ToolWorkspaceConfig | None = None
 
 
 class ServiceNodeConfig(BaseModel):
@@ -114,7 +126,13 @@ class ToolNodeConfig(BaseModel):
 
     command: str = Field(min_length=1, max_length=4000)
     working_directory: str | None = Field(default=None, max_length=2048)
+    # Tool commands must be pinned to the Runner which owns their local path.
+    # It remains optional in the graph for backwards compatibility; Run
+    # readiness rejects unpinned Tool nodes before execution.
+    runner_id: str | None = Field(default=None, min_length=1, max_length=120)
     timeout_seconds: int = Field(default=600, ge=1, le=86400)
+    retry: RetryConfig = Field(default_factory=RetryConfig)
+    workspace: ToolWorkspaceConfig | None = None
 
 
 class ConditionNodeConfig(BaseModel):

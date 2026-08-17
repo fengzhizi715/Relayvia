@@ -10,7 +10,9 @@ from app.api.routes.credentials import router as credentials_router
 from app.api.routes.health import router as health_router
 from app.api.routes.runs import node_runs_router, router as runs_router
 from app.api.routes.runs import runs_under_workflow
+from app.api.routes.runners import router as runners_router
 from app.api.routes.trace import router as trace_router
+from app.api.routes.workspaces import router as workspaces_router
 from app.api.routes.services import router as services_router
 from app.api.routes.workflows import router as workflows_router
 from app.core.config import get_settings
@@ -37,6 +39,8 @@ def create_app() -> FastAPI:
     app.include_router(node_runs_router, prefix="/api")
     app.include_router(artifacts_router, prefix="/api")
     app.include_router(trace_router, prefix="/api")
+    app.include_router(runners_router, prefix="/api")
+    app.include_router(workspaces_router, prefix="/api")
 
     @app.exception_handler(RelayviaError)
     async def relayvia_error_handler(_: Request, exc: RelayviaError) -> JSONResponse:

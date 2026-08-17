@@ -6,10 +6,10 @@ invariant "one task, one owner" also holds on dialects without row locks
 (e.g. SQLite in tests). Lease token fencing guards every write.
 """
 
-from datetime import timedelta
+from datetime import timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.domain.execution.models import ExecutionTask
@@ -44,10 +44,23 @@ class MySQLExecutionBackend(ExecutionBackend):
             db.commit()
             return task.id
 
-    async def claim(self, worker_id: str) -> ClaimedTask | None:
+    async def claim(
+        self,
+        worker_id: str,
+        *,
+        capabilities: set[str] | None = None,
+        auto_start: bool = False,
+    ) -> ClaimedTask | None:
+        """Claim the next PENDING task.
+
+        `capabilities=None` claims Worker tasks (no required capability);
+        `capabilities` claims Runner tasks whose required capability matches
+        and that are not reserved for another Runner. `auto_start=True`
+        transitions straight to RUNNING (used by Runners, which execute
+        immediately after claiming)."""
         with self._session_factory() as db:
             now = utc_now()
-            task = db.scalar(
+            query = (
                 select(ExecutionTask)
                 .join(WorkflowRun, WorkflowRun.id == ExecutionTask.workflow_run_id)
                 .where(
@@ -55,7 +68,16 @@ class MySQLExecutionBackend(ExecutionBackend):
                     ExecutionTask.available_at <= now,
                     WorkflowRun.status == WorkflowRunStatus.RUNNING.value,
                 )
-                .order_by(ExecutionTask.priority.desc(), ExecutionTask.available_at.asc(), ExecutionTask.created_at.asc())
+            )
+            if capabilities is None:
+                query = query.where(ExecutionTask.required_capability.is_(None))
+            else:
+                query = query.where(
+                    ExecutionTask.required_capability.in_(capabilities),
+                    or_(ExecutionTask.runner_id.is_(None), ExecutionTask.runner_id == worker_id),
+                )
+            task = db.scalar(
+                query.order_by(ExecutionTask.priority.desc(), ExecutionTask.available_at.asc(), ExecutionTask.created_at.asc())
                 .limit(1)
                 .with_for_update(skip_locked=True)
             )
@@ -78,6 +100,17 @@ class MySQLExecutionBackend(ExecutionBackend):
             if result.rowcount != 1:
                 db.rollback()
                 return None
+
+            attempt = task.attempt
+            if auto_start:
+                task.status = ExecutionTaskStatus.CLAIMED.value
+                transition_execution_task(ExecutionTaskStatus(task.status), ExecutionTaskStatus.RUNNING)
+                task.status = ExecutionTaskStatus.RUNNING.value
+                task.attempt += 1
+                attempt = task.attempt
+                task.started_at = now
+                self._node_status(db, task.node_run_id, target=NodeRunStatus.RUNNING, allow_same=True)
+                self._trace(db, task, RunEventType.NODE_STARTED, message=f"Node started on Runner (attempt {task.attempt})", attempt=task.attempt)
             db.commit()
             return ClaimedTask(
                 id=task.id,
@@ -85,7 +118,7 @@ class MySQLExecutionBackend(ExecutionBackend):
                 node_run_id=task.node_run_id,
                 task_type=task.task_type,
                 payload=task.payload_json,
-                attempt=task.attempt,
+                attempt=attempt,
                 max_attempts=task.max_attempts,
                 execution_key=task.execution_key,
                 locked_by=worker_id,
@@ -283,7 +316,17 @@ class MySQLExecutionBackend(ExecutionBackend):
             return False
         if is_execution_task_terminal(ExecutionTaskStatus(task.status)):
             return False
-        return task.locked_by == worker_id and task.lease_token == lease_token
+        return (
+            task.locked_by == worker_id
+            and task.lease_token == lease_token
+            and task.lease_expires_at is not None
+            and MySQLExecutionBackend._lease_active(task.lease_expires_at)
+        )
+
+    @staticmethod
+    def _lease_active(expires_at) -> bool:
+        expires = expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at
+        return expires > utc_now()
 
     @staticmethod
     def _release_or_cancel_for_run_state(db: Session, task: ExecutionTask, run: WorkflowRun | None) -> None:

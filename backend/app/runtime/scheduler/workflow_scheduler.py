@@ -19,6 +19,7 @@ from app.domain.runs.models import NodeRun, WorkflowRun
 from app.domain.runs.repository import list_node_runs
 from app.domain.workflows.graph import WorkflowGraph, parse_workflow_graph
 from app.infrastructure.database.base import utc_now
+from app.runtime.context import ContextResolver, UnresolvedContextReference
 from app.runtime.state_machine import (
     NodeRunStatus,
     WorkflowRunStatus,
@@ -167,22 +168,47 @@ class WorkflowScheduler:
                 node.model_dump(mode="json"),
                 default_backoff_seconds=self.default_backoff_seconds,
             )
+            payload: dict = {
+                "workflow_run_id": run_id,
+                "node_run_id": node_run.id,
+                "node_id": node_id,
+                "retry_backoff_seconds": retry_backoff_seconds,
+            }
+            required_capability: str | None = None
+            target_runner_id: str | None = None
+            if node.type.value == "tool":
+                # Tool nodes execute on a Runner. Backend resolves the config
+                # (Context) here so the Runner never needs the Graph/Context.
+                tool_config = _resolve_tool_config(run, node_runs, node)
+                if tool_config is None:
+                    continue
+                payload["config"] = tool_config
+                payload["execution_type"] = "shell"
+                required_capability = "shell"
+                target_runner_id = tool_config.pop("runner_id", None)
+                _attach_workspace(db, run_id, node_run, node_id, node, payload, runner_id=target_runner_id)
+            elif node.type.value == "agent":
+                coding = _coding_agent_payload(run, node_runs, node)
+                if coding is not None:
+                    payload["config"] = coding["config"]
+                    payload["execution_type"] = "coding_agent"
+                    required_capability = coding["capability"]
+                    target_runner_id = coding["runner_id"]
+                    _attach_workspace(db, run_id, node_run, node_id, node, payload, runner_id=target_runner_id)
+
             db.add(
                 ExecutionTask(
                     workflow_run_id=run_id,
                     node_run_id=node_run.id,
                     task_type="node_execution",
                     status=ExecutionTaskStatus.PENDING.value,
-                    payload_json={
-                        "workflow_run_id": run_id,
-                        "node_run_id": node_run.id,
-                        "node_id": node_id,
-                        "retry_backoff_seconds": retry_backoff_seconds,
-                    },
+                    payload_json=payload,
                     priority=self.default_priority,
                     attempt=0,
                     max_attempts=max_attempts,
                     available_at=utc_now(),
+                    runner_id=target_runner_id,
+                    required_capability=required_capability,
                     execution_key=f"{run_id}:{node_run.id}",
                 )
             )
@@ -372,3 +398,112 @@ def _bounded_int(value: Any, *, default: int, maximum: int) -> int:
         return max(0, min(int(value), maximum))
     except (TypeError, ValueError):
         return default
+
+
+def _attach_workspace(db: Session, run_id: str, node_run: NodeRun, node_id: str, node, payload: dict, *, runner_id: str | None) -> None:
+    """Create a Workspace record when the node declares one, and put its
+    preparation configuration into the task payload (Runner prepares it)."""
+    workspace_config = node.config.get("workspace") if isinstance(node.config, dict) else None
+    if not (isinstance(workspace_config, dict) and workspace_config.get("repository")):
+        return
+    from app.domain.workspaces.service import create_workspace
+
+    workspace = create_workspace(
+        db,
+        workflow_run_id=run_id,
+        node_run_id=node_run.id,
+        node_id=node_id,
+        name=f"{run_id[:8]}-{node_id}",
+        repository=str(workspace_config.get("repository")),
+        strategy=str(workspace_config.get("strategy") or "worktree"),
+        base_branch=workspace_config.get("base_branch"),
+        runner_id=runner_id,
+    )
+    payload["workspace"] = {
+        "id": workspace.id,
+        "repository": workspace.repository,
+        "strategy": workspace.workspace_type,
+        "base_branch": workspace.base_branch,
+        "branch": workspace.branch,
+    }
+
+
+def _coding_agent_payload(run: WorkflowRun, node_runs: list[NodeRun], node) -> dict | None:
+    """Build a Runner-executable payload for a coding-agent (Codex) node."""
+    config = node.config if isinstance(node.config, dict) else {}
+    agents_snapshot = run.execution_snapshot_json.get("agents", {})
+    agent_snapshot = agents_snapshot.get(config.get("agent_id")) if isinstance(agents_snapshot, dict) else None
+    if not isinstance(agent_snapshot, dict):
+        return None
+    connector_type = agent_snapshot.get("connector_type")
+    if connector_type == "codex":
+        from app.connectors.agents.coding import CodexConnector
+
+        resolved = _resolve_agent_task(run, node_runs, node)
+        if resolved is None:
+            return None
+        command = CodexConnector().build_command(
+            task=resolved["task"],
+            timeout_seconds=resolved["timeout_seconds"],
+            executable=agent_snapshot.get("executable"),
+        )
+        return {
+            "capability": "codex",
+            "runner_id": agent_snapshot.get("runner_id"),
+            "config": {"command": command, "working_directory": None, "timeout_seconds": resolved["timeout_seconds"]},
+        }
+    return None
+
+
+def _resolve_agent_task(run: WorkflowRun, node_runs: list[NodeRun], node) -> dict | None:
+    completed = {node_run.node_id: node_run.output_json for node_run in node_runs if node_run.output_json is not None}
+    resolver = ContextResolver(
+        workflow_input=run.input_json,
+        variables=run.variables_json,
+        node_outputs=completed,
+        run={"id": run.id, "status": run.status},
+    )
+    try:
+        resolved = resolver.resolve(node.config)
+    except UnresolvedContextReference:
+        return None
+    task = resolved.get("task_template")
+    if not isinstance(task, str) or not task.strip():
+        return None
+    timeout_value = resolved.get("timeout_seconds")
+    try:
+        timeout_seconds = max(int(timeout_value), 1) if timeout_value else 600
+    except (TypeError, ValueError):
+        timeout_seconds = 600
+    return {"task": task, "timeout_seconds": timeout_seconds}
+
+
+def _resolve_tool_config(run: WorkflowRun, node_runs: list[NodeRun], node) -> dict | None:
+    """Resolve a Tool node's config into a Runner-executable payload. Returns
+    None while an upstream dependency is not yet available (re-check later)."""
+    completed = {node_run.node_id: node_run.output_json for node_run in node_runs if node_run.output_json is not None}
+    resolver = ContextResolver(
+        workflow_input=run.input_json,
+        variables=run.variables_json,
+        node_outputs=completed,
+        run={"id": run.id, "status": run.status},
+    )
+    try:
+        resolved = resolver.resolve(node.config)
+    except UnresolvedContextReference:
+        return None
+    command = resolved.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return None
+    working_directory = resolved.get("working_directory")
+    timeout_value = resolved.get("timeout_seconds")
+    try:
+        timeout_seconds = max(int(timeout_value), 1) if timeout_value else 60
+    except (TypeError, ValueError):
+        timeout_seconds = 60
+    return {
+        "command": command,
+        "working_directory": working_directory if isinstance(working_directory, str) else None,
+        "runner_id": resolved.get("runner_id") if isinstance(resolved.get("runner_id"), str) else None,
+        "timeout_seconds": timeout_seconds,
+    }

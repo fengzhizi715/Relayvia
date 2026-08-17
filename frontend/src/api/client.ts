@@ -1,4 +1,4 @@
-export type AgentConnectorType = "http" | "local" | "custom";
+export type AgentConnectorType = "http" | "local" | "custom" | "codex" | "opencode" | "cursor";
 export type AgentStatus = "unknown" | "healthy" | "unhealthy";
 export type ServiceStatus = "unknown" | "healthy" | "unhealthy";
 export type CredentialType = "api_key" | "bearer_token" | "basic_auth";
@@ -39,6 +39,7 @@ export type Agent = {
   health_check_url: string | null;
   headers: Record<string, string>;
   runner_id: string | null;
+  executable: string | null;
   capabilities: Capability[];
   input_schema: Record<string, unknown>;
   output_schema: Record<string, unknown>;
@@ -64,6 +65,7 @@ export type AgentPayload = {
   health_check_url?: string;
   headers: Record<string, string>;
   runner_id?: string;
+  executable?: string;
   capabilities: Capability[];
   input_schema: Record<string, unknown>;
   output_schema: Record<string, unknown>;
@@ -409,4 +411,20 @@ export type RunEvent = {
 };
 export const getRunEvents = (runId: string, afterId?: number) =>
   request<RunEvent[]>(`/api/workflow-runs/${runId}/events${afterId ? `?after_id=${afterId}` : ""}`);
+
+export type RunnerStatus = "online" | "offline" | "disabled";
+export type Runner = {
+  id: string;
+  name: string;
+  hostname: string;
+  platform: string | null;
+  status: RunnerStatus;
+  capabilities: string[];
+  last_seen_at: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+export const getRunners = () => request<Runner[]>("/api/runners");
+export const getRunner = (id: string) => request<Runner>(`/api/runners/${id}`);
 export const getRunExecutionTasks = (runId: string) => request<ExecutionTask[]>(`/api/workflow-runs/${runId}/execution-tasks`);

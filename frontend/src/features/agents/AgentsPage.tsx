@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiError, deleteAgent, getAgents, getCredentials, testAgent, updateAgent, type Agent } from "../../api/client";
+import { ApiError, deleteAgent, getAgents, getCredentials, getRunners, testAgent, updateAgent, type Agent } from "../../api/client";
 import { Modal } from "../../components/Modal";
 import { ResourceEmptyState } from "../../components/ResourceEmptyState";
 import { StatusBadge } from "../../components/StatusBadge";
@@ -19,6 +19,7 @@ export function AgentsPage() {
   const queryClient = useQueryClient();
   const agents = useQuery({ queryKey: ["agents"], queryFn: getAgents });
   const credentials = useQuery({ queryKey: ["credentials"], queryFn: getCredentials });
+  const runners = useQuery({ queryKey: ["runners"], queryFn: getRunners });
   const [selected, setSelected] = useState<Agent | null>(null);
   const [editing, setEditing] = useState<Agent | undefined>();
   const [showForm, setShowForm] = useState(false);
@@ -70,14 +71,13 @@ export function AgentsPage() {
         {selected ? <section className="detail-card">
           <div className="detail-header"><div><p className="eyebrow">AGENT DETAIL</p><h3>{selected.name}</h3><p>{selected.description || "No description"}</p></div><StatusBadge label={selected.status.toUpperCase()} tone={statusTone(selected.status)} /></div>
           <div className="detail-actions"><button className="button button--small" type="button" onClick={() => testMutation.mutate(selected.id)} disabled={testMutation.isPending}>{testMutation.isPending ? "Testing..." : "Test connection"}</button><button className="button button--small" type="button" onClick={() => { setEditing(selected); setShowForm(true); }}>Edit</button><button className="button button--small" type="button" onClick={() => toggleMutation.mutate({ agent: selected })}>{selected.enabled ? "Disable" : "Enable"}</button><button className="button button--small button--danger" type="button" onClick={() => setShowDelete(selected)}>Delete</button></div>
-          <div className="detail-grid"><div><span className="detail-label">Connector</span><strong>{selected.connector_type.toUpperCase()}</strong></div><div><span className="detail-label">Endpoint</span><strong className="truncate">{selected.endpoint || "—"}</strong></div><div><span className="detail-label">Credential</span><strong>{selected.credential_name || "None"}</strong></div><div><span className="detail-label">Last check</span><strong>{formatDate(selected.last_checked_at)}{selected.last_latency_ms !== null ? ` · ${selected.last_latency_ms} ms` : ""}</strong></div></div>
+          <div className="detail-grid"><div><span className="detail-label">Connector</span><strong>{selected.connector_type.toUpperCase()}</strong></div><div><span className="detail-label">Endpoint / executable</span><strong className="truncate">{selected.endpoint || selected.executable || "—"}</strong></div><div><span className="detail-label">Runner</span><strong className="truncate">{selected.runner_id || "—"}</strong></div><div><span className="detail-label">Last check</span><strong>{formatDate(selected.last_checked_at)}{selected.last_latency_ms !== null ? ` · ${selected.last_latency_ms} ms` : ""}</strong></div></div>
           {selected.last_error && <div className="detail-warning">{selected.last_error}</div>}
           <div className="contract-grid"><div><span className="detail-label">Capabilities</span><pre>{JSON.stringify(selected.capabilities, null, 2)}</pre></div><div><span className="detail-label">Input schema</span><pre>{JSON.stringify(selected.input_schema, null, 2)}</pre></div><div><span className="detail-label">Output schema</span><pre>{JSON.stringify(selected.output_schema, null, 2)}</pre></div></div>
         </section> : <div className="select-state">Select an Agent to inspect its connection and invocation contract.</div>}
       </div>}
-      {showForm && <AgentForm agent={editing} credentials={credentials.data ?? []} onClose={() => { setShowForm(false); setEditing(undefined); }} onSaved={refresh} />}
+      {showForm && <AgentForm agent={editing} credentials={credentials.data ?? []} runners={runners.data ?? []} onClose={() => { setShowForm(false); setEditing(undefined); }} onSaved={refresh} />}
       {showDelete && <Modal title="Delete Agent" eyebrow="CONFIRM ACTION" onClose={() => setShowDelete(null)}><div className="confirm-copy"><p>Remove <strong>{showDelete.name}</strong> from the Agent Registry?</p><p>This does not delete or modify the external Agent.</p></div><div className="modal-actions"><button className="button" type="button" onClick={() => setShowDelete(null)}>Cancel</button><button className="button button--danger" type="button" disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate(showDelete.id)}>Delete Agent</button></div></Modal>}
     </div>
   );
 }
-

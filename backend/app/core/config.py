@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     artifact_storage_dir: str = "data/artifacts"
     artifact_max_bytes: int = 100 * 1024 * 1024
 
+    runner_offline_seconds: int = 60
+    backend_url: str = "http://127.0.0.1:8000"
+    runner_root: str = ""
+    runner_id_file: str = ""
+
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[3] / ".env",
         env_prefix="RELAYVIA_",

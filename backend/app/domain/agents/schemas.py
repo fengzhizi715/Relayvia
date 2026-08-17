@@ -20,6 +20,7 @@ class AgentCreate(BaseModel):
     health_check_url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
     runner_id: str | None = None
+    executable: str | None = Field(default=None, max_length=2048)
     capabilities: list[Capability] = Field(default_factory=list)
     input_schema: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] = Field(default_factory=dict)
@@ -38,6 +39,7 @@ class AgentUpdate(BaseModel):
     health_check_url: str | None = None
     headers: dict[str, str] | None = None
     runner_id: str | None = None
+    executable: str | None = Field(default=None, max_length=2048)
     capabilities: list[Capability] | None = None
     input_schema: dict[str, Any] | None = None
     output_schema: dict[str, Any] | None = None
@@ -59,6 +61,7 @@ class AgentRead(BaseModel):
     health_check_url: str | None
     headers: dict[str, str]
     runner_id: str | None
+    executable: str | None
     capabilities: list[Capability]
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
@@ -73,4 +76,3 @@ class AgentRead(BaseModel):
     last_error: str | None
     created_at: datetime
     updated_at: datetime
-

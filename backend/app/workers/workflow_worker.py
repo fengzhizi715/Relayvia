@@ -199,6 +199,8 @@ async def _process_task(
             artifacts=sanitize_artifacts(artifact_refs),
         )
         _reconcile_after(session_factory, scheduler, task.workflow_run_id)
+    # ClaimedTask carries the attempt count from before `start()` increments
+    # the durable task, so account for the in-flight attempt here.
     elif result.retryable and task.attempt + 1 < task.max_attempts:
         await backend.schedule_retry(
             task.id,

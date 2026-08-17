@@ -12,6 +12,9 @@ class AgentConnectorType(StrEnum):
     HTTP = "http"
     LOCAL = "local"
     CUSTOM = "custom"
+    CODEX = "codex"
+    OPENCODE = "opencode"
+    CURSOR = "cursor"
 
 
 class AgentHTTPMethod(StrEnum):
@@ -39,7 +42,8 @@ class Agent(TimestampMixin, Base):
     http_method: Mapped[str] = mapped_column(String(10), nullable=False, default=AgentHTTPMethod.POST.value)
     health_check_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     headers_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    runner_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    runner_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("runners.id", ondelete="RESTRICT"), nullable=True, index=True)
+    executable: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     capabilities_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     input_schema_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     output_schema_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
@@ -61,4 +65,3 @@ class Agent(TimestampMixin, Base):
 
 
 __all__ = ["Agent", "AgentConnectorType", "AgentHTTPMethod", "AgentStatus"]
-
