@@ -37,6 +37,7 @@ export function NodeRunInspector({ nodeRun }: { nodeRun: NodeRun }) {
   const isApproval = nodeRun.node_type === "human" && nodeRun.node_subtype === "approval";
   const isHumanInput = nodeRun.node_type === "human" && nodeRun.node_subtype === "input";
   const isWait = nodeRun.node_type === "logic" && nodeRun.node_subtype === "wait";
+  const canReject = nodeRun.waiting_metadata?.allow_reject !== false;
   const resumeAt = nodeRun.waiting_metadata?.resume_at ? String(nodeRun.waiting_metadata.resume_at) : null;
 
   return (
@@ -63,9 +64,9 @@ export function NodeRunInspector({ nodeRun }: { nodeRun: NodeRun }) {
           <button className="button button--small button--primary" type="button" disabled={action.isPending} onClick={() => action.mutate("approve")}>
             {action.isPending ? "Approving..." : "Approve"}
           </button>
-          <button className="button button--small button--danger" type="button" disabled={action.isPending} onClick={() => action.mutate("reject")}>
+          {canReject && <button className="button button--small button--danger" type="button" disabled={action.isPending} onClick={() => action.mutate("reject")}>
             {action.isPending ? "Rejecting..." : "Reject"}
-          </button>
+          </button>}
         </div>
       )}
 

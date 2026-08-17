@@ -256,6 +256,64 @@ def test_human_approval_reject_fails_workflow(client, memory_db, http_test_serve
     assert node_runs(factory, run_id)["approval"].error_json["code"] == "REJECTED"
 
 
+def test_human_actions_enforce_node_contracts(client, memory_db, http_test_server):
+    _, factory = memory_db
+    graph = approval_graph()
+    graph["nodes"][2]["config"]["allow_reject"] = False
+    with factory() as db:
+        run = make_run(db, graph, registry_snapshot(http_test_server))
+        scheduler = WorkflowScheduler(default_max_attempts=1)
+        scheduler.schedule_ready_nodes(db, run.id)
+        db.commit()
+        run_id = run.id
+
+    drive(factory, scheduler)
+    approval_id = node_runs(factory, run_id)["approval"].id
+    rejected = client.post(f"/api/node-runs/{approval_id}/reject")
+    assert rejected.status_code == 409
+    assert rejected.json()["error"]["code"] == "HUMAN_REJECTION_DISABLED"
+
+    with factory() as db:
+        input_run = make_run(db, human_input_graph(), registry_snapshot(http_test_server))
+        scheduler.schedule_ready_nodes(db, input_run.id)
+        db.commit()
+        input_run_id = input_run.id
+    drive(factory, scheduler)
+    input_id = node_runs(factory, input_run_id)["human_input"].id
+    invalid = client.post(f"/api/node-runs/{input_id}/submit", json={"input": {"comment": 42}})
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "INVALID_HUMAN_INPUT"
+
+
+def test_wait_timer_cannot_be_approved_and_paused_run_does_not_advance(client, memory_db):
+    _, factory = memory_db
+    with factory() as db:
+        run = make_run(db, wait_graph(), registry_snapshot("http://127.0.0.1:1"))
+        scheduler = WorkflowScheduler(default_max_attempts=1)
+        scheduler.schedule_ready_nodes(db, run.id)
+        db.commit()
+        run_id = run.id
+
+    drive(factory, scheduler)
+    wait_id = node_runs(factory, run_id)["wait"].id
+    wrong_action = client.post(f"/api/node-runs/{wait_id}/approve")
+    assert wrong_action.status_code == 409
+    assert wrong_action.json()["error"]["code"] == "NODE_RUN_ACTION_NOT_ALLOWED"
+    assert client.post(f"/api/workflow-runs/{run_id}/pause").status_code == 200
+
+    with factory() as db:
+        wait_run = db.get(NodeRun, wait_id)
+        wait_run.waiting_metadata_json = {"resume_at": (utc_now() - timedelta(seconds=1)).isoformat(), "duration_seconds": 1}
+        db.commit()
+        scheduler.reconcile_run(db, run_id)
+        db.commit()
+        assert NodeRunStatus(db.get(NodeRun, wait_id).status) is NodeRunStatus.WAITING
+
+    assert client.post(f"/api/workflow-runs/{run_id}/resume").status_code == 200
+    drive(factory, scheduler)
+    assert run_status(factory, run_id) is WorkflowRunStatus.COMPLETED
+
+
 def test_duplicate_approve_returns_conflict(client, memory_db, http_test_server):
     _, factory = memory_db
     with factory() as db:

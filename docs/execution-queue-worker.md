@@ -293,8 +293,10 @@ WAITING**，然后**完成并释放 ExecutionTask**——Worker 不因等待而�
   可配置），key 严格校验（`[A-Za-z0-9_-]+` + root 限制），**防止 Path Traversal**。
   Storage 是抽象接口，未来可换 S3 / MinIO / OSS。
 - **产生**：`ExecutionResult.artifacts` 是 Artifact Candidate——
-  `{name, type, content_type, local_path | uri, output_key, metadata}`。
-  Worker 在 success 时注册：读文件 / 外部 URI → 建 Artifact → `artifact://<id>`；
+  `{name, type, content_type, content | uri, output_key, metadata}`。
+  Server Worker 只接收受大小限制的内存 `content` 或 HTTP(S) 外部 URI，**绝不读取
+  Connector 提供的 `local_path`**；本地工作区文件必须由未来 Relayvia Runner 通过受控
+  上传契约提交。Worker 在 success 时注册 Artifact → `artifact://<id>`；
   按 `output_key` 写入 NodeRun.output（下游可 `{{nodes.X.output.<key>}}` 引用），
   引用列表存 `node_runs.artifact_refs_json`。Connector 不直接操作 Artifact 状态。
 - **外部 URI**（如 HTTP 返回 `artifact_url`）：注册为 external Artifact（无本地文件，
@@ -317,7 +319,8 @@ Workflow 执行过程以结构化 `RunEvent` 持久化（`run_events` 表，自�
   workflow 状态）、service（start/approve/reject/submit/cancel）——全部与状态变更同一事务。
 - **Trace API**：`GET /api/workflow-runs/{id}/events?after_id=&limit=`（增量分页）。
 - **SSE**：`GET /api/workflow-runs/{id}/events/stream` —— 轮询数据库（无 Redis），
-  推送 `id:`/`data:` 帧；客户端断线后带 `Last-Event-ID` 重连即可续传未消费事件；
+  推送命名事件与 `id:`/`data:` 帧；客户端断线后使用 `Last-Event-ID`（或显式
+  `after_id`）续传未消费事件；
   Run 进入终态后流自然结束。数据库始终是 durable Source of Truth。
 - **安全**：事件 payload 由 Runtime 构造（不含 NodeRun output 正文），Credential /
   Secret 不进入 Trace / SSE（复用 Phase 8/12 脱敏边界）。
@@ -332,8 +335,9 @@ Workflow 执行过程以结构化 `RunEvent` 持久化（`run_events` 表，自�
 ## 当前边界
 
 尚未实现：Codex/Cursor/OpenCode Adapter、Local/Custom Agent、Relayvia Runner dispatch、
-Human Approval Runtime、Wait Timer、Router、SSE Run Event 与 Artifact binary Storage。
-HTTP Agent / HTTP Service 已可执行；Tool Node 在 Runner 完成前明确拒绝执行。
+Router 与远程 Artifact Storage（S3 / MinIO / OSS）。Human Approval / Human Input、
+Wait Timer、Run Trace + SSE 与 Local Artifact Storage 已实现。HTTP Agent / HTTP Service
+已可执行；Tool Node 在 Runner 完成前明确拒绝执行。
 
 ## 配置
 
@@ -343,4 +347,6 @@ RELAYVIA_WORKER_POLL_INTERVAL   (默认 0.5)
 RELAYVIA_WORKER_LEASE_SECONDS   (默认 60)
 RELAYVIA_WORKER_LEASE_RENEW_INTERVAL (默认 20)
 RELAYVIA_WORKER_RECOVERY_INTERVAL   (默认 30)
+RELAYVIA_ARTIFACT_STORAGE_DIR        (默认 data/artifacts)
+RELAYVIA_ARTIFACT_MAX_BYTES          (默认 104857600)
 ```

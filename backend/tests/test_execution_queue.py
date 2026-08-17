@@ -99,7 +99,7 @@ class TraceExecutor(NodeExecutor):
             ok=True,
             output={"ok": True},
             metadata={"status_code": 201, "authorization": "must-not-persist"},
-            artifacts=[{"uri": "artifact://report-1", "type": "report", "token": "must-not-persist"}],
+            artifacts=[{"content": b"report", "type": "report", "token": "must-not-persist"}],
         )
 
 
@@ -422,7 +422,10 @@ def test_worker_persists_sanitized_connector_trace(client, http_test_server, mem
     assert agent_run["execution_metadata"] == {"status_code": 201, "authorization": "***REDACTED***"}
     # Success-path artifacts now go through registration: only clean references
     # (uri/type/name) are persisted; the raw `token` field is never stored.
-    assert agent_run["artifacts"] == [{"uri": "artifact://report-1", "type": "report", "name": "artifact"}]
+    assert len(agent_run["artifacts"]) == 1
+    assert agent_run["artifacts"][0]["uri"].startswith("artifact://")
+    assert agent_run["artifacts"][0]["type"] == "report"
+    assert agent_run["artifacts"][0]["name"] == "artifact"
 
 
 def test_worker_persists_sanitized_failed_connector_trace(memory_db):

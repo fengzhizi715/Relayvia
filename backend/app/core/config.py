@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     worker_recovery_interval: float = 30.0
 
     artifact_storage_dir: str = "data/artifacts"
+    artifact_max_bytes: int = 100 * 1024 * 1024
 
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[3] / ".env",

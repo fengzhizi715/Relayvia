@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
+from app.core.errors import RelayviaError
 from app.domain.artifacts.service import register_artifact_candidates
 from app.domain.runs.models import NodeRun, WorkflowRun
 from app.domain.workflows.graph import parse_workflow_graph
@@ -94,7 +95,7 @@ def _waiting_for(context: NodeExecutionContext) -> tuple[str, dict] | None:
     node = context.node_definition
     if node["type"] == "human":
         if node["subtype"] == "approval":
-            return ("HUMAN_APPROVAL", {})
+            return ("HUMAN_APPROVAL", {"allow_reject": bool(context.resolved_config.get("allow_reject", True))})
         if node["subtype"] == "input":
             return ("HUMAN_INPUT", {})
     if node["type"] == "logic" and node["subtype"] == "wait":
@@ -168,15 +169,26 @@ async def _process_task(
         output = dict(result.output or {})
         artifact_refs: list[dict] = []
         if result.artifacts:
-            with session_factory() as db:
-                artifact_refs, output_keys = register_artifact_candidates(
-                    db,
-                    workflow_run_id=task.workflow_run_id,
-                    producer_node_run_id=task.node_run_id,
-                    candidates=result.artifacts,
-                    storage=storage or get_artifact_storage(),
+            try:
+                with session_factory() as db:
+                    artifact_refs, output_keys = register_artifact_candidates(
+                        db,
+                        workflow_run_id=task.workflow_run_id,
+                        producer_node_run_id=task.node_run_id,
+                        candidates=result.artifacts,
+                        storage=storage or get_artifact_storage(),
+                        max_bytes=get_settings().artifact_max_bytes,
+                    )
+                    db.commit()
+            except RelayviaError as exc:
+                await backend.fail(
+                    task.id,
+                    worker_id,
+                    task.lease_token,
+                    sanitize_error({"code": exc.code, "message": exc.message, "retryable": False, "details": exc.details}),
                 )
-                db.commit()
+                _reconcile_after(session_factory, scheduler, task.workflow_run_id)
+                return
             output.update(output_keys)
         await backend.complete(
             task.id,

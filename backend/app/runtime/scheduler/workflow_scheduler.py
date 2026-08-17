@@ -205,9 +205,9 @@ class WorkflowScheduler:
         if current in (WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED):
             return current
 
-        self.promote_due_waits(db, run_id)
         if current is WorkflowRunStatus.PAUSED:
             return current
+        self.promote_due_waits(db, run_id)
 
         self.schedule_ready_nodes(db, run_id)
 

@@ -38,7 +38,9 @@ class Artifact(Base):
     )
     type: Mapped[str] = mapped_column(String(32), nullable=False, default=ArtifactType.FILE.value)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    uri: Mapped[str] = mapped_column(String(2048), nullable=False, unique=True, index=True)
+    # External URLs may be emitted by more than one Run. Internal
+    # `artifact://<uuid>` values are already unique by construction.
+    uri: Mapped[str] = mapped_column(String(2048), nullable=False, index=True)
     size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)

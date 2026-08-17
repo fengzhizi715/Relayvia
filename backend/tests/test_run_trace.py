@@ -304,3 +304,26 @@ def test_sse_reconnect_resumes_from_after_id(client, memory_db, http_test_server
     ids_in_stream = [int(line.split(": ")[1]) for line in body.splitlines() if line.startswith("id: ")]
     assert ids_in_stream and all(event_id > last_seen for event_id in ids_in_stream)
     assert ids_in_stream == [event_id for event_id, _, _, _ in all_events if event_id > last_seen]
+
+
+def test_sse_reconnect_resumes_from_last_event_id_header(client, memory_db, http_test_server, monkeypatch):
+    _, factory = memory_db
+    monkeypatch.setattr("app.api.routes.trace.get_session_factory", lambda: factory)
+    with factory() as db:
+        run = make_run(db, linear_graph(), registry_snapshot(http_test_server))
+        run_id = run.id
+        scheduler = WorkflowScheduler(default_max_attempts=1)
+        scheduler.schedule_ready_nodes(db, run.id)
+        db.commit()
+
+    drive(factory, scheduler)
+    all_events = events_of(factory, run_id)
+    last_seen = all_events[len(all_events) // 2][0]
+    with client.stream(
+        "GET",
+        f"/api/workflow-runs/{run_id}/events/stream",
+        headers={"Last-Event-ID": str(last_seen)},
+    ) as response:
+        body = response.read().decode()
+    ids_in_stream = [int(line.split(": ")[1]) for line in body.splitlines() if line.startswith("id: ")]
+    assert ids_in_stream == [event_id for event_id, _, _, _ in all_events if event_id > last_seen]

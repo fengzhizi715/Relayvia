@@ -385,9 +385,9 @@ def resume_run(db: Session, run_id: str) -> WorkflowRunRead:
     run.status = WorkflowRunStatus.RUNNING.value
     run.paused_at = None
     db.commit()
-    # Existing tasks were deliberately retained while paused; this also queues
-    # any node that became ready immediately before the pause transition.
-    WorkflowScheduler().schedule_ready_nodes(db, run.id)
+    # Reconcile rather than only schedule: a Wait timer may have become due
+    # while the Run was paused, but PAUSED deliberately freezes its progress.
+    WorkflowScheduler().reconcile_run(db, run.id)
     db.commit()
     db.refresh(run)
     return _to_read(db, run)
@@ -467,9 +467,32 @@ def _require_waiting(node_run: NodeRun) -> None:
         )
 
 
+def _waiting_node(run: WorkflowRun, node_run: NodeRun, *, subtype: str, reason: str):
+    if WorkflowRunStatus(run.status) is not WorkflowRunStatus.WAITING:
+        raise RelayviaError(
+            "WORKFLOW_RUN_NOT_WAITING",
+            "Workflow Run must be waiting before this action can be applied",
+            status_code=409,
+            details={"status": run.status},
+        )
+    if node_run.node_type != "human" or node_run.node_subtype != subtype or node_run.waiting_reason != reason:
+        raise RelayviaError(
+            "NODE_RUN_ACTION_NOT_ALLOWED",
+            "This action is not allowed for the waiting Node Run",
+            status_code=409,
+            details={"node_type": node_run.node_type, "node_subtype": node_run.node_subtype, "waiting_reason": node_run.waiting_reason},
+        )
+    graph = parse_workflow_graph(run.graph_snapshot_json)
+    node = next((item for item in graph.nodes if item.id == node_run.node_id), None)
+    if node is None:  # pragma: no cover - immutable snapshot invariant
+        raise RelayviaError("NODE_SNAPSHOT_MISSING", "Node is missing from the Workflow Run snapshot", status_code=409)
+    return node
+
+
 def approve_node_run(db: Session, node_run_id: str) -> NodeRunRead:
     node_run, run = _lock_node_run(db, node_run_id)
     _require_waiting(node_run)
+    _waiting_node(run, node_run, subtype="approval", reason="HUMAN_APPROVAL")
     transition_node_run(NodeRunStatus.WAITING, NodeRunStatus.COMPLETED)
     node_run.status = NodeRunStatus.COMPLETED.value
     node_run.output_json = {"approved": True}
@@ -486,6 +509,9 @@ def approve_node_run(db: Session, node_run_id: str) -> NodeRunRead:
 def reject_node_run(db: Session, node_run_id: str) -> NodeRunRead:
     node_run, run = _lock_node_run(db, node_run_id)
     _require_waiting(node_run)
+    node = _waiting_node(run, node_run, subtype="approval", reason="HUMAN_APPROVAL")
+    if not bool(node.config.get("allow_reject", True)):
+        raise RelayviaError("HUMAN_REJECTION_DISABLED", "This approval does not allow rejection", status_code=409)
     transition_node_run(NodeRunStatus.WAITING, NodeRunStatus.FAILED)
     node_run.status = NodeRunStatus.FAILED.value
     node_run.error_json = {"code": "REJECTED", "message": "Approval was rejected", "retryable": False, "details": {}}
@@ -502,6 +528,21 @@ def reject_node_run(db: Session, node_run_id: str) -> NodeRunRead:
 def submit_node_run(db: Session, node_run_id: str, input_data: dict) -> NodeRunRead:
     node_run, run = _lock_node_run(db, node_run_id)
     _require_waiting(node_run)
+    node = _waiting_node(run, node_run, subtype="input", reason="HUMAN_INPUT")
+    schema = node.config.get("form_schema")
+    if isinstance(schema, dict) and schema:
+        try:
+            Draft7Validator.check_schema(schema)
+        except SchemaError as exc:
+            raise RelayviaError("INVALID_HUMAN_INPUT_SCHEMA", "Human Input schema is invalid", status_code=409) from exc
+        errors = list(Draft7Validator(schema).iter_errors(input_data))
+        if errors:
+            raise RelayviaError(
+                "INVALID_HUMAN_INPUT",
+                "Submitted input does not match the Human Input schema",
+                status_code=422,
+                details={"errors": [error.message for error in errors]},
+            )
     transition_node_run(NodeRunStatus.WAITING, NodeRunStatus.COMPLETED)
     node_run.status = NodeRunStatus.COMPLETED.value
     node_run.output_json = dict(input_data)

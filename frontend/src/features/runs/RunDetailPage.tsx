@@ -95,16 +95,25 @@ export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
     refetchInterval: 4000,
   });
 
-  // Live SSE: any event invalidates the run + timeline queries. EventSource
-  // reconnects automatically using the SSE event id (Last-Event-ID).
+  // Live SSE: the API emits named lifecycle events and EventSource carries
+  // Last-Event-ID automatically after reconnecting.
   useEffect(() => {
     if (typeof EventSource === "undefined") return;
     const source = new EventSource(`/api/workflow-runs/${runId}/events/stream`);
-    source.onmessage = () => {
+    const refreshFromEvent = () => {
       void queryClient.invalidateQueries({ queryKey: ["workflow-run", runId] });
       void queryClient.invalidateQueries({ queryKey: ["run-events", runId] });
     };
-    return () => source.close();
+    const eventTypes = [
+      "workflow_started", "workflow_waiting", "workflow_resumed", "workflow_completed", "workflow_failed", "workflow_cancelled",
+      "node_queued", "node_started", "node_retrying", "node_waiting", "node_resumed", "node_completed", "node_failed", "node_skipped", "node_cancelled",
+    ];
+    source.onmessage = refreshFromEvent;
+    eventTypes.forEach((eventType) => source.addEventListener(eventType, refreshFromEvent));
+    return () => {
+      eventTypes.forEach((eventType) => source.removeEventListener(eventType, refreshFromEvent));
+      source.close();
+    };
   }, [runId, queryClient]);
 
   const refresh = () => {

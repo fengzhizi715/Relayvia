@@ -147,23 +147,34 @@ def test_register_artifact_creates_entity_and_storage_file(memory_db, storage):
     assert storage.open(artifact_id).read() == b"report-content"
 
 
-def test_register_candidates_local_and_external(memory_db, storage, tmp_path):
+def test_register_candidates_bytes_external_and_same_run_reference(memory_db, storage):
     _, factory = memory_db
-    local = tmp_path / "produced.txt"
-    local.write_text("patch-content")
     with factory() as db:
         run = make_run(db, chain_graph(), {"schema_version": "2"})
         node_run = db.scalar(select(NodeRun).where(NodeRun.workflow_run_id == run.id, NodeRun.node_id == "tool_a"))
+        existing = register_artifact_bytes(
+            db,
+            workflow_run_id=run.id,
+            producer_node_run_id=node_run.id,
+            name="existing.txt",
+            artifact_type="report",
+            content_type="text/plain",
+            content=b"existing",
+            metadata={},
+            storage=storage,
+        )
+        existing_uri = existing.uri
         refs, output_map = register_artifact_candidates(
             db,
             workflow_run_id=run.id,
             producer_node_run_id=node_run.id,
             candidates=[
-                {"name": "patch.diff", "type": "patch", "content_type": "text/plain", "local_path": str(local), "output_key": "patch"},
+                {"name": "patch.diff", "type": "patch", "content_type": "text/plain", "content": b"patch-content", "output_key": "patch"},
                 {"name": "model", "type": "model", "uri": "https://example.com/model.onnx", "output_key": "model"},
-                {"name": "existing", "type": "report", "uri": "artifact://existing-id"},
+                {"name": "existing", "type": "report", "uri": existing_uri},
             ],
             storage=storage,
+            max_bytes=1024,
         )
         db.commit()
         run_id, node_run_id = run.id, node_run.id
@@ -171,14 +182,31 @@ def test_register_candidates_local_and_external(memory_db, storage, tmp_path):
     assert output_map["patch"].startswith("artifact://")
     # External URI artifacts keep their external reference (directly usable).
     assert output_map["model"] == "https://example.com/model.onnx"
-    assert any(ref["uri"] == "artifact://existing-id" for ref in refs)
+    assert any(ref["uri"] == existing_uri for ref in refs)
     assert len(refs) == 3
     with factory() as db:
         artifacts = db.scalars(select(Artifact)).all()
-        assert len(artifacts) == 2  # external + local registered; existing passed through
+        assert len(artifacts) == 3  # existing + external + bytes registered
         patch_artifact = next(artifact for artifact in artifacts if artifact.type == "patch")
         assert patch_artifact.uri == output_map["patch"]
         assert storage.open(patch_artifact.id).read() == b"patch-content"
+
+
+def test_register_candidates_rejects_local_path_and_oversized_content(memory_db, storage, tmp_path):
+    _, factory = memory_db
+    with factory() as db:
+        run = make_run(db, chain_graph(), {"schema_version": "2"})
+        node_run = db.scalar(select(NodeRun).where(NodeRun.workflow_run_id == run.id, NodeRun.node_id == "tool_a"))
+        with pytest.raises(RelayviaError, match="local_path"):
+            register_artifact_candidates(
+                db, workflow_run_id=run.id, producer_node_run_id=node_run.id,
+                candidates=[{"local_path": str(tmp_path / "outside.txt")}], storage=storage, max_bytes=1024,
+            )
+        with pytest.raises(RelayviaError, match="size limit"):
+            register_artifact_candidates(
+                db, workflow_run_id=run.id, producer_node_run_id=node_run.id,
+                candidates=[{"content": b"x" * 4}], storage=storage, max_bytes=3,
+            )
 
 
 def test_register_external_artifact_has_no_local_content(memory_db, storage):
@@ -192,6 +220,19 @@ def test_register_external_artifact_has_no_local_content(memory_db, storage):
         assert storage.exists(artifact.id) is False
 
 
+def test_external_artifact_uri_can_be_reused(memory_db):
+    _, factory = memory_db
+    with factory() as db:
+        first_run = make_run(db, chain_graph(), {"schema_version": "2"})
+        second_run = make_run(db, chain_graph(), {"schema_version": "2"})
+        first_node = db.scalar(select(NodeRun).where(NodeRun.workflow_run_id == first_run.id, NodeRun.node_id == "tool_a"))
+        second_node = db.scalar(select(NodeRun).where(NodeRun.workflow_run_id == second_run.id, NodeRun.node_id == "tool_a"))
+        first = register_external_artifact(db, workflow_run_id=first_run.id, producer_node_run_id=first_node.id, name="model", artifact_type="model", uri="https://cdn.example/model.onnx", content_type=None, metadata={})
+        second = register_external_artifact(db, workflow_run_id=second_run.id, producer_node_run_id=second_node.id, name="model", artifact_type="model", uri="https://cdn.example/model.onnx", content_type=None, metadata={})
+        db.commit()
+        assert first.id != second.id
+
+
 # --- End-to-end: produce -> register -> reference -> consume ---
 
 
@@ -203,13 +244,11 @@ class ArtifactChainExecutor(NodeExecutor):
 
     async def execute(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
         if ctx.node_id == "tool_a":
-            produced = self.tmp_path / "report.txt"
-            produced.write_text("report-content")
             return NodeExecutionResult(
                 ok=True,
                 output={},
                 artifacts=[
-                    {"name": "report.txt", "type": "report", "content_type": "text/plain", "local_path": str(produced), "output_key": "report"}
+                    {"name": "report.txt", "type": "report", "content_type": "text/plain", "content": b"report-content", "output_key": "report"}
                 ],
             )
         if ctx.node_id == "tool_b":

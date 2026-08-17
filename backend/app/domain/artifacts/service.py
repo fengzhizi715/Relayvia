@@ -5,8 +5,8 @@ Connector only describes candidates; this service persists content to the
 `ArtifactStorage`, creates the `Artifact` record and returns `artifact://<id>`.
 """
 
-from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import RelayviaError
 from app.domain.artifacts.models import Artifact
-from app.domain.artifacts.reference import artifact_uri
+from app.domain.artifacts.reference import artifact_uri, parse_artifact_uri
 from app.infrastructure.artifact_storage.base import ArtifactStorage
 
 
@@ -99,14 +99,17 @@ def register_artifact_candidates(
     producer_node_run_id: str,
     candidates: list[dict[str, Any]],
     storage: ArtifactStorage,
+    max_bytes: int,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """Register artifact candidates produced by an ExecutionResult.
 
     Returns (artifact references, output_key -> artifact://<id> map). A
-    candidate is either a local file (`local_path`) or an external URI
-    (`uri`). An `output_key` lets the producer expose the reference through
-    NodeRun output so downstream nodes can reference it via the Context
-    Resolver.
+    candidate is either in-memory bytes (`content`) or an external HTTP(S)
+    URI (`uri`). A server Worker never consumes a connector-provided local
+    path: local files belong to a Runner-owned workspace and require the
+    future Runner upload contract. An `output_key` lets the producer expose
+    the reference through NodeRun output so downstream nodes can reference it
+    via the Context Resolver.
     """
     references: list[dict[str, Any]] = []
     output_map: dict[str, str] = {}
@@ -120,11 +123,23 @@ def register_artifact_candidates(
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         uri = item.get("uri")
 
+        content = item.get("content")
         if item.get("local_path"):
-            try:
-                content = Path(str(item["local_path"])).read_bytes()
-            except OSError:
-                continue
+            raise RelayviaError(
+                "UNSAFE_ARTIFACT_LOCAL_PATH",
+                "Artifact local_path is only supported by a registered Runner upload",
+                status_code=422,
+            )
+        if isinstance(content, bytearray):
+            content = bytes(content)
+        if isinstance(content, bytes):
+            if len(content) > max_bytes:
+                raise RelayviaError(
+                    "ARTIFACT_TOO_LARGE",
+                    "Artifact content exceeds the configured size limit",
+                    status_code=422,
+                    details={"max_bytes": max_bytes},
+                )
             artifact = register_artifact_bytes(
                 db,
                 workflow_run_id=workflow_run_id,
@@ -138,10 +153,19 @@ def register_artifact_candidates(
             )
         elif isinstance(uri, str) and uri:
             if uri.startswith("artifact://"):
-                # Already a Workflow reference: keep it as-is.
+                referenced = db.get(Artifact, parse_artifact_uri(uri))
+                if referenced is None:
+                    raise RelayviaError("ARTIFACT_NOT_FOUND", "Referenced Artifact not found", status_code=422)
+                if referenced.workflow_run_id != workflow_run_id:
+                    raise RelayviaError(
+                        "ARTIFACT_REFERENCE_FORBIDDEN",
+                        "Artifact reference belongs to a different Workflow Run",
+                        status_code=422,
+                    )
                 artifact = None
-                reference = {"uri": uri, "type": artifact_type, "name": name}
+                reference = {"uri": referenced.uri, "type": referenced.type, "name": referenced.name}
             else:
+                _validate_external_uri(uri)
                 artifact = register_external_artifact(
                     db,
                     workflow_run_id=workflow_run_id,
@@ -163,6 +187,16 @@ def register_artifact_candidates(
         if isinstance(output_key, str) and output_key:
             output_map[output_key] = reference["uri"]
     return references, output_map
+
+
+def _validate_external_uri(uri: str) -> None:
+    parsed = urlparse(uri)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RelayviaError(
+            "INVALID_EXTERNAL_ARTIFACT_URI",
+            "External Artifact URI must use http or https",
+            status_code=422,
+        )
 
 
 def get_artifact(db: Session, artifact_id: str) -> Artifact:

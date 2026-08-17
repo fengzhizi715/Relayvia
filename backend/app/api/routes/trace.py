@@ -3,7 +3,7 @@
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -64,14 +64,19 @@ def get_run_events(
 
 
 @router.get("/{run_id}/events/stream")
-def stream_run_events(run_id: str, after_id: int = Query(default=0, ge=0)):
+def stream_run_events(
+    run_id: str,
+    after_id: int | None = Query(default=None, ge=0),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+):
     """SSE stream of RunEvents. The database is the durable source of truth;
     this endpoint polls it and emits `id:`/`data:` frames so clients can
     resume with Last-Event-ID after a disconnect."""
     session_factory = get_session_factory()
+    resume_after_id = after_id if after_id is not None else _parse_last_event_id(last_event_id)
 
     async def generator():
-        last_id = after_id
+        last_id = resume_after_id
         while True:
             with session_factory() as db:
                 run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == run_id))
@@ -112,3 +117,12 @@ def stream_run_events(run_id: str, after_id: int = Query(default=0, ge=0)):
                 yield ": keep-alive\n\n"
 
     return StreamingResponse(generator(), media_type="text/event-stream")
+
+
+def _parse_last_event_id(value: str | None) -> int:
+    if value is None:
+        return 0
+    try:
+        return max(int(value), 0)
+    except ValueError:
+        return 0
