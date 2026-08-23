@@ -331,11 +331,20 @@ export class ApiError extends Error {
 }
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
+const controlPlaneToken = import.meta.env.VITE_RELAYVIA_CONTROL_PLANE_TOKEN;
+
+function apiUrl(path: string): string {
+  return `${apiBaseUrl}${path}`;
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
+  const response = await fetch(apiUrl(path), {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(controlPlaneToken ? { Authorization: `Bearer ${controlPlaneToken}` } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   if (response.status === 204) return undefined as T;
   const body = (await response.json()) as T & { error?: { code: string; message: string; details?: Record<string, unknown> } };
@@ -412,6 +421,40 @@ export type RunEvent = {
 export const getRunEvents = (runId: string, afterId?: number) =>
   request<RunEvent[]>(`/api/workflow-runs/${runId}/events${afterId ? `?after_id=${afterId}` : ""}`);
 
+/** Browser EventSource cannot attach Authorization. This fetch-based SSE
+ * stream keeps the API base URL and bearer token without putting secrets in
+ * an URL query string. */
+export async function streamRunEvents(
+  runId: string,
+  options: { signal: AbortSignal; onEvent: (eventType: string) => void },
+): Promise<void> {
+  const response = await fetch(apiUrl(`/api/workflow-runs/${runId}/events/stream`), {
+    headers: controlPlaneToken ? { Authorization: `Bearer ${controlPlaneToken}` } : {},
+    signal: options.signal,
+  });
+  if (!response.ok || !response.body) {
+    throw new ApiError("SSE_CONNECTION_FAILED", "Unable to open workflow event stream");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buffered += decoder.decode(value, { stream: true });
+      const frames = buffered.split("\n\n");
+      buffered = frames.pop() ?? "";
+      for (const frame of frames) {
+        const eventLine = frame.split("\n").find((line) => line.startsWith("event:"));
+        if (eventLine) options.onEvent(eventLine.slice("event:".length).trim());
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export type RunnerStatus = "online" | "offline" | "disabled";
 export type Runner = {
   id: string;
@@ -427,4 +470,23 @@ export type Runner = {
 };
 export const getRunners = () => request<Runner[]>("/api/runners");
 export const getRunner = (id: string) => request<Runner>(`/api/runners/${id}`);
+export type WorkspaceStatus = "creating" | "ready" | "in_use" | "failed" | "released";
+export type Workspace = {
+  id: string;
+  name: string;
+  runner_id: string | null;
+  repository: string;
+  path: string | null;
+  branch: string | null;
+  base_branch: string | null;
+  workspace_type: "local" | "worktree" | "local_repository" | "git_worktree";
+  status: WorkspaceStatus;
+  workflow_run_id: string;
+  node_run_id: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+export const getWorkspaces = (runId?: string) => request<Workspace[]>(`/api/workspaces${runId ? `?run_id=${encodeURIComponent(runId)}` : ""}`);
+export const releaseWorkspace = (id: string) => request<Workspace>(`/api/workspaces/${id}/release`, { method: "POST" });
 export const getRunExecutionTasks = (runId: string) => request<ExecutionTask[]>(`/api/workflow-runs/${runId}/execution-tasks`);

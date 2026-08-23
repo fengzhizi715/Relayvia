@@ -1,8 +1,8 @@
 # Relayvia Workflow Validation
 
-本文件描述 Phase 5 的 Workflow Graph Validation Engine。它是 Relayvia 对
-“一个工程上合法的 Workflow” 的定义，**后端是唯一权威**。前端（Phase 4 Builder）
-只做即时 UX 校验；是否可执行由本 Engine 决定。
+本文件描述 Relayvia 的 Workflow Graph Validation Engine。它是 Relayvia 对
+“一个工程上合法的 Workflow” 的定义，**后端是唯一权威**。前端只做即时 UX 校验；
+是否可执行由本 Engine 决定。
 
 核心产品模型：
 
@@ -131,7 +131,7 @@ metadata 等自由文本不扫描。支持 `workflow.input.*`、`workflow.variab
 
 ## Draft vs Version Validation
 
-- **Save Draft**：只做 Contract 校验（含 Registry 引用存在性，Phase 3 行为）。
+- **Save Draft**：只做 Contract 校验（含 Registry 引用存在性）。
   允许保存业务不完整 Graph（由 Validate 报告缺失）。
 - **Create Version**：先 Full Validation；有 ERROR 则拒绝，WARNING 允许。
 

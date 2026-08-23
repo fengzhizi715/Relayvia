@@ -13,7 +13,7 @@ export type NodeIssue = {
  * Phase 4 edit-time validation. This is deliberately local UX validation only:
  * required fields, reference existence and service/action consistency. The
  * backend remains the final Graph Contract authority. Full topological /
- * branch / cycle validation belongs to Phase 5.
+ * Branch / cycle validation belongs to the server-side Graph Validation Engine.
  */
 export function nodeCompletenessErrors(node: WorkflowNode): NodeIssue[] {
   const issues: NodeIssue[] = [];

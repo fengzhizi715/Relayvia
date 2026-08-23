@@ -12,6 +12,10 @@ os.environ.setdefault(
     "RELAYVIA_CREDENTIAL_ENCRYPTION_KEY",
     "TnwmzeqQ-XffnsD3s2PF6VG4mBIeGltKpC_iuQCyg-M=",
 )
+os.environ.setdefault("RELAYVIA_CONTROL_PLANE_TOKEN", "test-control-plane-token")
+os.environ.setdefault("RELAYVIA_RUNNER_ENROLLMENT_TOKEN", "test-runner-enrollment-token")
+os.environ.setdefault("RELAYVIA_ALLOW_PRIVATE_NETWORK_URLS", "true")
+os.environ.setdefault("RELAYVIA_RUNNER_ALLOW_UNSANDBOXED_EXECUTION", "true")
 
 from app.core.config import get_settings  # noqa: E402
 from app.infrastructure.database.base import Base  # noqa: E402
@@ -99,6 +103,6 @@ def client(db_session):
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as test_client:
+    with TestClient(app, headers={"Authorization": "Bearer test-control-plane-token"}) as test_client:
         yield test_client
     app.dependency_overrides.clear()

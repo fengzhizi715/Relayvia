@@ -15,6 +15,7 @@ from app.api.routes.trace import router as trace_router
 from app.api.routes.workspaces import router as workspaces_router
 from app.api.routes.services import router as services_router
 from app.api.routes.workflows import router as workflows_router
+from app.api.security import control_plane_error, is_runner_data_plane_request
 from app.core.config import get_settings
 from app.core.errors import RelayviaError
 
@@ -22,6 +23,21 @@ from app.core.errors import RelayviaError
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name, version="0.1.0")
+
+    @app.middleware("http")
+    async def control_plane_authentication(request: Request, call_next):
+        # Health remains probeable. Runner data-plane calls authenticate with
+        # enrollment/per-Runner tokens in their route handlers instead of a
+        # browser-facing control-plane token.
+        if request.method != "OPTIONS" and request.url.path != "/api/health" and not is_runner_data_plane_request(request):
+            denied = control_plane_error(request)
+            if denied is not None:
+                return denied
+        return await call_next(request)
+
+    # Add CORS after the auth middleware: Starlette applies the last-added
+    # middleware outermost, so browser clients also receive CORS headers for
+    # 401/503 authentication responses.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
@@ -29,6 +45,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
     app.include_router(health_router, prefix="/api")
     app.include_router(agents_router, prefix="/api")
     app.include_router(services_router, prefix="/api")

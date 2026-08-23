@@ -92,11 +92,12 @@ def agent_node(nid: str, agent_id: str = "agent-1", input_mapping: dict | None =
     )
 
 
-def agent(agent_id: str = "agent-1", *, enabled: bool = True, status: str = "unknown", input_schema: dict | None = None, output_schema: dict | None = None) -> RegistryAgent:
+def agent(agent_id: str = "agent-1", *, enabled: bool = True, status: str = "unknown", connector_type: str = "http", input_schema: dict | None = None, output_schema: dict | None = None) -> RegistryAgent:
     return RegistryAgent(
         id=agent_id,
         name=f"Agent {agent_id}",
         enabled=enabled,
+        connector_type=connector_type,
         status=status,
         timeout_seconds=600,
         input_schema=input_schema or {},

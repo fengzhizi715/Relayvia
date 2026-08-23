@@ -15,6 +15,7 @@ from app.connectors.base import ExecutionResult
 from app.connectors.http import HTTPInvocationConfig
 from app.connectors.services.http import HTTPServiceConnector
 from app.domain.credentials.model import Credential
+from app.infrastructure.security.crypto import CredentialCrypto
 from app.infrastructure.security.url_policy import combine_service_url
 from app.runtime.executor.base import NodeExecutionContext, NodeExecutionResult, NodeExecutor
 from app.runtime.executor.result import ExecutionError
@@ -85,7 +86,7 @@ class DefaultNodeExecutor(NodeExecutor):
                 },
             )
         )
-        return _execution_result_to_node(result, agent.get("output_schema"), "Agent output")
+        return _execution_result_to_node(result, agent.get("output_schema"), "Agent output", _credential_secret_values(credential))
 
     async def _execute_service(self, context: NodeExecutionContext) -> NodeExecutionResult:
         config = context.node_definition["config"]
@@ -121,7 +122,7 @@ class DefaultNodeExecutor(NodeExecutor):
                 retry_on_status=retry_on_status,
             )
         )
-        return _execution_result_to_node(result, action.get("output_schema"), "Service output")
+        return _execution_result_to_node(result, action.get("output_schema"), "Service output", _credential_secret_values(credential))
 
     def _execute_condition(self, context: NodeExecutionContext) -> NodeExecutionResult:
         expression = context.resolved_config.get("expression")
@@ -173,7 +174,7 @@ def _validate_payload(value: Any, schema: Any, label: str) -> NodeExecutionResul
     return None
 
 
-def _execution_result_to_node(result: ExecutionResult, output_schema: Any, label: str) -> NodeExecutionResult:
+def _execution_result_to_node(result: ExecutionResult, output_schema: Any, label: str, sensitive_values: set[str]) -> NodeExecutionResult:
     """Map the unified Connector `ExecutionResult` onto the Node boundary."""
     if result.status != "success":
         return NodeExecutionResult(
@@ -182,6 +183,7 @@ def _execution_result_to_node(result: ExecutionResult, output_schema: Any, label
             error=result.error,
             metadata=dict(result.metadata or {}),
             artifacts=list(result.artifacts or []),
+            sensitive_values=sensitive_values,
         )
     invalid = _validate_payload(result.output or {}, output_schema, label)
     return invalid or NodeExecutionResult(
@@ -189,6 +191,7 @@ def _execution_result_to_node(result: ExecutionResult, output_schema: Any, label
         output=result.output or {},
         metadata=dict(result.metadata or {}),
         artifacts=list(result.artifacts or []),
+        sensitive_values=sensitive_values,
     )
 
 
@@ -236,3 +239,15 @@ def _evaluate_expression(expr: Any) -> bool:
 
 def _failure(code: str, message: str) -> NodeExecutionResult:
     return NodeExecutionResult(ok=False, retryable=False, error=ExecutionError(code, message))
+
+
+def _credential_secret_values(credential: Credential | None) -> set[str]:
+    if credential is None:
+        return set()
+    try:
+        payload = CredentialCrypto().decrypt(credential.encrypted_payload)
+    except Exception:
+        # The HTTP connector will report decryption failures through the
+        # normal execution boundary; redaction must never mask that error.
+        return set()
+    return {str(value) for value in payload.values() if isinstance(value, (str, int, float)) and str(value)}

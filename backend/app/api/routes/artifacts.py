@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, status
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.errors import RelayviaError
@@ -42,13 +42,21 @@ def get_artifact_content(artifact_id: str, db: Session = Depends(get_db)):
             status_code=404,
         )
     try:
-        path = get_artifact_storage().local_path(artifact.id)
-    except (FileNotFoundError, RelayviaError) as exc:
-        if isinstance(exc, FileNotFoundError):
-            raise RelayviaError("ARTIFACT_CONTENT_MISSING", "Artifact content is missing", status_code=404) from exc
-        raise
-    return FileResponse(
-        path,
+        stream = get_artifact_storage().open(artifact.id)
+    except FileNotFoundError as exc:
+        raise RelayviaError("ARTIFACT_CONTENT_MISSING", "Artifact content is missing", status_code=404) from exc
+    return StreamingResponse(
+        _chunks(stream),
         media_type=artifact.content_type or "application/octet-stream",
-        filename=artifact.name,
+        headers={"Content-Disposition": f'attachment; filename="{artifact.name}"'},
     )
+
+
+def _chunks(stream, size: int = 64 * 1024):
+    try:
+        while chunk := stream.read(size):
+            yield chunk
+    finally:
+        close = getattr(stream, "close", None)
+        if close:
+            close()

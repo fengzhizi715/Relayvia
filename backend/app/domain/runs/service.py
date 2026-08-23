@@ -106,6 +106,7 @@ def _registry_context(graph: WorkflowGraph, agents: dict[str, Agent], services: 
                 id=agent.id,
                 name=agent.name,
                 enabled=agent.enabled,
+                connector_type=agent.connector_type,
                 status=agent.status,
                 timeout_seconds=agent.timeout_seconds,
                 input_schema=agent.input_schema_json or {},
@@ -412,7 +413,7 @@ def start_run(db: Session, run_id: str) -> WorkflowRunRead:
         run.started_at = utc_now()
     record_event(db, workflow_run_id=run.id, event_type=RunEventType.WORKFLOW_STARTED, message="Workflow started")
     db.commit()
-    # Phase 7: submit ExecutionTasks for the initial Ready Nodes.
+    # Submit ExecutionTasks for the initial Ready Nodes.
     WorkflowScheduler().schedule_ready_nodes(db, run.id)
     db.commit()
     db.refresh(run)
@@ -468,7 +469,7 @@ def cancel_run(db: Session, run_id: str) -> WorkflowRunRead:
         if node_run.finished_at is None:
             node_run.finished_at = utc_now()
 
-    # Phase 7: cancel outstanding ExecutionTasks for this run.
+    # Cancel outstanding ExecutionTasks for this run.
     WorkflowScheduler().cancel_run_tasks(db, run_id)
 
     db.commit()

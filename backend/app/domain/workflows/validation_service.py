@@ -59,6 +59,7 @@ def build_validation_context(db: Session, graph: WorkflowGraph) -> ValidationCon
                 id=agent.id,
                 name=agent.name,
                 enabled=agent.enabled,
+                connector_type=agent.connector_type,
                 status=agent.status,
                 timeout_seconds=agent.timeout_seconds,
                 input_schema=agent.input_schema_json or {},

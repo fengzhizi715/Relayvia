@@ -75,6 +75,7 @@ class RunnerClient:
                 "runner_id": self.id,
                 "runner_token": self.token,
             },
+            headers=self._enrollment_headers() if self.id is None else None,
         )
         response.raise_for_status()
         enrolled = response.json()
@@ -89,6 +90,16 @@ class RunnerClient:
             raise RuntimeError("Runner is not enrolled")
         return {"X-Relayvia-Runner-Token": self.token}
 
+    @staticmethod
+    def _enrollment_headers() -> dict[str, str]:
+        token = get_settings().runner_enrollment_token
+        if not token:
+            raise RuntimeError(
+                "RELAYVIA_RUNNER_ENROLLMENT_TOKEN is required for first Runner enrollment "
+                "(or enroll the Runner through an authenticated control-plane client)"
+            )
+        return {"X-Relayvia-Runner-Enrollment-Token": token}
+
     async def heartbeat(self) -> None:
         await self.client.post(
             f"/api/runners/{self.id}/heartbeat",
@@ -100,6 +111,8 @@ class RunnerClient:
     def _capabilities() -> list[str]:
         from app.connectors.agents.coding import detect_coding_agent_capabilities
 
+        if _runner_root() is None or not _runner_execution_enabled():
+            return []
         return ["shell", *detect_coding_agent_capabilities()]
 
     async def claim(self):
@@ -120,6 +133,17 @@ class RunnerClient:
         response.raise_for_status()
         return True
 
+    async def task_heartbeat(self, task_id: str, lease_token: str) -> bool:
+        response = await self.client.post(
+            f"/api/runners/{self.id}/tasks/{task_id}/heartbeat",
+            params={"lease_token": lease_token},
+            headers=self._headers(),
+        )
+        if response.status_code == 409:
+            return True
+        response.raise_for_status()
+        return bool(response.json().get("cancel_requested"))
+
     async def close(self) -> None:
         await self.client.aclose()
 
@@ -131,6 +155,35 @@ class WorkspaceError(Exception):
 def _runner_root() -> Path | None:
     root = get_settings().runner_root
     return Path(root).resolve() if root else None
+
+
+def _runner_execution_enabled() -> bool:
+    settings = get_settings()
+    if settings.runner_allow_unsandboxed_execution:
+        return True
+    return bool(settings.runner_sandbox_command)
+
+
+def _command_argv(command: str, *, root: Path, cwd: Path) -> list[str] | None:
+    """Build an execution command without passing Workflow text to a shell.
+
+    A platform sandbox wrapper is the secure default. It receives the root,
+    cwd and command as distinct arguments using this small runner-side
+    contract: ``wrapper --root ROOT --cwd CWD -- /bin/sh -lc COMMAND``.
+    Operators own the wrapper implementation (for example bwrap, a container
+    launcher, or an OS policy wrapper). The explicit unsafe mode exists only
+    for a trusted developer machine and is never implied by Runner Root.
+    """
+    settings = get_settings()
+    if settings.runner_allow_unsandboxed_execution:
+        return ["/bin/sh", "-lc", command]
+    wrapper = settings.runner_sandbox_command
+    if not wrapper:
+        return None
+    wrapper_path = Path(wrapper).expanduser().resolve()
+    if not wrapper_path.is_file() or not os.access(wrapper_path, os.X_OK):
+        return None
+    return [str(wrapper_path), "--root", str(root), "--cwd", str(cwd), "--", "/bin/sh", "-lc", command]
 
 
 async def _git_ok(repository: Path) -> bool:
@@ -178,7 +231,7 @@ async def _git_diff(repository: Path) -> bytes:
     return stdout if process.returncode == 0 else b""
 
 
-async def execute_task(task: dict) -> dict:
+async def execute_task(task: dict, *, cancel_event: asyncio.Event | None = None) -> dict:
     """Execute a claimed Runner task (shell) and build an ExecutionResult.
 
     When the task declares a workspace, the command runs inside the prepared
@@ -218,10 +271,23 @@ async def execute_task(task: dict) -> dict:
         if not cwd_path.is_relative_to(root_path):
             return {"ok": False, "error": {"code": "INVALID_WORKING_DIRECTORY", "message": "Working directory escapes the Runner root", "retryable": False, "details": {"cwd": cwd}}}
 
+    cwd_path = Path(cwd).resolve()
+    argv = _command_argv(command, root=root, cwd=cwd_path)
+    if argv is None:
+        return {
+            "ok": False,
+            "error": {
+                "code": "RUNNER_SANDBOX_REQUIRED",
+                "message": "Runner command execution requires an executable sandbox wrapper; trusted local development may explicitly set RELAYVIA_RUNNER_ALLOW_UNSANDBOXED_EXECUTION=true",
+                "retryable": False,
+                "details": {},
+            },
+        }
+
     try:
-        process = await asyncio.create_subprocess_shell(
-            command,
-            cwd=cwd,
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(cwd_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
@@ -229,12 +295,29 @@ async def execute_task(task: dict) -> dict:
     except OSError as exc:
         return {"ok": False, "error": {"code": "RUNNER_SPAWN_FAILED", "message": str(exc), "retryable": False, "details": {}}}
 
-    try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
-    except asyncio.TimeoutError:
+    communicate = asyncio.create_task(process.communicate())
+    cancellation_wait = asyncio.create_task(cancel_event.wait()) if cancel_event is not None else None
+    waiters = {communicate}
+    if cancellation_wait is not None:
+        waiters.add(cancellation_wait)
+    done, pending = await asyncio.wait(waiters, timeout=timeout_seconds, return_when=asyncio.FIRST_COMPLETED)
+    if communicate in done:
+        stdout_bytes, stderr_bytes = communicate.result()
+    elif cancellation_wait is not None and cancellation_wait in done:
         _terminate_process_group(process)
-        await process.communicate()
+        stdout_bytes, stderr_bytes = await communicate
+        return {
+            "ok": False,
+            "error": {"code": "RUNNER_CANCELLED", "message": "Runner task was cancelled by the control plane", "retryable": False, "details": {}},
+            "metadata": {"cancelled": True, **workspace_meta},
+            "artifacts": [],
+        }
+    else:
+        _terminate_process_group(process)
+        await communicate
         return {"ok": False, "error": {"code": "RUNNER_TIMEOUT", "message": f"Command timed out after {timeout_seconds}s", "retryable": False, "details": {}}}
+    for waiter in pending:
+        waiter.cancel()
 
     stdout = _safe_output(stdout_bytes)
     stderr = _safe_output(stderr_bytes)
@@ -291,34 +374,80 @@ def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
         return
 
 
-async def run_runner() -> None:
+async def run_runner(*, client: RunnerClient | None = None, stop_event: asyncio.Event | None = None) -> None:
+    """Run the Runner pull loop with a bounded number of owned tasks.
+
+    ``stop_event`` supports supervised shutdown and regression tests.
+    Production entrypoints continue to use SIGINT/SIGTERM.
+    """
     settings = get_settings()
-    client = RunnerClient(settings.backend_url)
-    stop = asyncio.Event()
+    client = client or RunnerClient(settings.backend_url)
+    stop = stop_event or asyncio.Event()
     loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, stop.set)
-        except (NotImplementedError, RuntimeError):
-            break
+    if stop_event is None:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, stop.set)
+            except (NotImplementedError, RuntimeError):
+                break
 
     try:
         await client.register()
         print(f"[runner] registered as {client.id} ({client.name})")
+        concurrency = max(1, min(settings.runner_concurrency, 32))
+        active: set[asyncio.Task[None]] = set()
         while not stop.is_set():
             try:
                 await client.heartbeat()
             except httpx.HTTPError:
                 pass
-            task = await client.claim()
-            if task is not None:
-                result = await execute_task(task)
-                accepted = await client.submit(task["task_id"], task["lease_token"], result)
-                if not accepted:
-                    print(f"[runner] task {task['task_id']} stale; result dropped")
-            await asyncio.sleep(settings.worker_poll_interval)
+            while len(active) < concurrency and not stop.is_set():
+                task = await client.claim()
+                if task is None:
+                    break
+                active.add(asyncio.create_task(_run_claimed_task(client, task, settings.worker_lease_renew_interval)))
+            if active:
+                done, active = await asyncio.wait(active, timeout=settings.worker_poll_interval, return_when=asyncio.FIRST_COMPLETED)
+                for finished in done:
+                    try:
+                        finished.result()
+                    except Exception as exc:  # pragma: no cover - defensive
+                        print(f"[runner] unexpected task failure: {exc}")
+            else:
+                await asyncio.sleep(settings.worker_poll_interval)
     finally:
+        if 'active' in locals() and active:
+            await asyncio.gather(*active, return_exceptions=True)
         await client.close()
+
+
+async def _run_claimed_task(client: RunnerClient, task: dict, renew_interval: float) -> None:
+    """Execute one claimed task without serializing the Runner main loop."""
+    cancel_event = asyncio.Event()
+    monitor = asyncio.create_task(_monitor_task(client, task, cancel_event, renew_interval))
+    try:
+        result = await execute_task(task, cancel_event=cancel_event)
+    finally:
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)
+    accepted = await client.submit(task["task_id"], task["lease_token"], result)
+    if not accepted:
+        print(f"[runner] task {task['task_id']} stale; result dropped")
+
+
+async def _monitor_task(client: RunnerClient, task: dict, cancel_event: asyncio.Event, interval: float) -> None:
+    """Keep a local task lease alive and relay durable cancel requests."""
+    while not cancel_event.is_set():
+        try:
+            if await client.task_heartbeat(task["task_id"], task["lease_token"]):
+                cancel_event.set()
+                return
+        except httpx.HTTPError:
+            # Do not terminate useful local work merely because the control
+            # plane has a transient network fault. Lease expiry will fence the
+            # stale result if the outage persists.
+            pass
+        await asyncio.sleep(max(interval, 0.2))
 
 
 def main() -> None:

@@ -16,6 +16,7 @@ from app.core.errors import RelayviaError
 from app.domain.artifacts.models import Artifact
 from app.domain.artifacts.reference import artifact_uri, parse_artifact_uri
 from app.infrastructure.artifact_storage.base import ArtifactStorage
+from app.runtime.executor.trace import sanitize_metadata
 
 
 def _to_read(artifact: Artifact) -> dict[str, Any]:
@@ -120,7 +121,7 @@ def register_artifact_candidates(
         artifact_type = str(item.get("type") or "file")
         content_type = item.get("content_type")
         content_type = str(content_type) if content_type else None
-        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        metadata = sanitize_metadata(item.get("metadata") if isinstance(item.get("metadata"), dict) else {})
         uri = item.get("uri")
 
         content = item.get("content")

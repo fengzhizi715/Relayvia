@@ -14,7 +14,7 @@ export function RouterNode({ id, data }: NodeProps<Node<WorkflowReactFlowNodeDat
         node={node}
         category="Router"
         glyph="→"
-        summary={<span className="workflow-node-summary-line workflow-node-summary-mono">Reserved (Phase 5)</span>}
+        summary={<span className="workflow-node-summary-line workflow-node-summary-mono">Reserved for a future Runtime extension</span>}
       />
       <Handle className="workflow-handle" type="target" position={Position.Left} />
       <Handle className="workflow-handle" type="source" position={Position.Right} />

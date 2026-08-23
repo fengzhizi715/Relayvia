@@ -1,6 +1,6 @@
 # Relayvia Workflow Runtime · State Machine & Run Model
 
-Phase 6 建立 Workflow Runtime 的**持久化执行模型与状态机**。它回答的是
+Relayvia Runtime 使用**持久化执行模型与状态机**。它回答的是
 "一次 Workflow 执行在 Relayvia 中如何被可靠地表示"，而不是"Node 怎么执行"。
 本阶段没有 Executor、没有 Execution Queue、没有 Worker。
 
@@ -9,7 +9,7 @@ Phase 6 建立 Workflow Runtime 的**持久化执行模型与状态机**。它�
 ```text
 Workflow         用户长期维护的可编辑 Definition（Draft）
   ↓
-Workflow Version 不可变 Definition Snapshot（Phase 5 保证 Valid）
+Workflow Version 不可变 Definition Snapshot（Graph Validation 保证 Valid）
   ↓
 Workflow Run     某一次具体执行实例
   ↓
@@ -73,7 +73,7 @@ RETRYING → QUEUED
 ```
 
 `COMPLETED / FAILED / SKIPPED / CANCELLED` 为 Terminal。
-`QUEUED / RETRYING` 本阶段只定义状态与迁移，Phase 7 Queue 才真正使用。
+`QUEUED / RETRYING` 由 Durable Execution Queue 正式使用。
 
 ## Run Creation
 
@@ -82,7 +82,7 @@ Workflow
   ↓ 选择 Version（workflow_version_id / version / current_version）
   ↓ Version 必须存在（否则 WORKFLOW_HAS_NO_VERSION）
   ↓ 解析 Graph
-  ↓ Registry 批加载 → Run Readiness（复用 Phase 5 references 规则）
+  ↓ Registry 批加载 → Run Readiness（复用 Graph reference 规则）
   ↓ 生成 Graph Snapshot + Execution Snapshot
   ↓ 校验 Run Input（Data Input Schema）
   ↓ 初始化 Variables（Definition Defaults）
@@ -118,9 +118,8 @@ Workflow
 - **Cancel**：非 Terminal → `CANCELLED`（terminal 再 cancel 返回 `RUN_ALREADY_TERMINAL`）；
   所有未完成 NodeRun → `CANCELLED`（已完成的历史 NodeRun 保持 `COMPLETED`）。
 
-## Phase 6 vs Phase 7 边界
+## Runtime boundary
 
-Phase 6 只建立 Runtime 状态世界。以下**不属于**本阶段：
-Execution Queue / Worker / Task Claim、Agent/Service/Tool 真正执行、HTTP Connector
-执行、Retry Scheduler、Parallel/Merge Scheduler、Condition 求值、Human Approval
-Runtime、Wait Timer、SSE Run Event、Runner、Artifact Runtime。
+状态机定义 Workflow / Node 的持久化状态；Durable Queue、Worker、Connector、Runner、
+Retry、分支调度、Human / Wait 恢复、Artifact 与 SSE Trace 都在该状态机之上运行。它们不得
+绕过状态迁移而直接写入 Run 或 Node 状态。

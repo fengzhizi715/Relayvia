@@ -7,8 +7,10 @@ from typing import Any
 import httpx
 
 from app.connectors.result import ConnectionTestResult, ConnectionTestStatus, HTTPInvocationResult
+from app.core.errors import RelayviaError
 from app.domain.credentials.model import Credential, CredentialType
 from app.infrastructure.security.crypto import CredentialCrypto
+from app.infrastructure.security.url_policy import validate_http_url
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,16 @@ async def test_http_connection(config: HTTPConnectionConfig) -> ConnectionTestRe
             checked_at=checked_at,
             error_code="HEALTH_CHECK_NOT_CONFIGURED",
             message="A health check URL is not configured",
+        )
+
+    try:
+        validate_http_url(config.url, field="health_check_url")
+    except RelayviaError as exc:
+        return ConnectionTestResult(
+            status=ConnectionTestStatus.UNHEALTHY,
+            checked_at=checked_at,
+            error_code=exc.code,
+            message="Configured health check URL is blocked by the URL policy",
         )
 
     headers, basic_auth = _authentication(config)
@@ -113,6 +125,10 @@ async def invoke_http(config: HTTPInvocationConfig) -> HTTPInvocationResult:
     The response body is streamed and capped at `MAX_RESPONSE_BYTES`; larger
     responses are rejected as `RESPONSE_TOO_LARGE` (non-retryable).
     """
+    try:
+        validate_http_url(config.url, field="url")
+    except RelayviaError as exc:
+        return HTTPInvocationResult(ok=False, retryable=False, error_code=exc.code, message="Configured URL is blocked by the URL policy")
     headers, basic_auth = _authentication(
         HTTPConnectionConfig(
             url=config.url,

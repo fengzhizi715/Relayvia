@@ -16,6 +16,7 @@ class RegistryAgent:
     id: str
     name: str
     enabled: bool
+    connector_type: str = "http"
     status: str = "unknown"
     timeout_seconds: int | None = None
     input_schema: dict[str, Any] = field(default_factory=dict)

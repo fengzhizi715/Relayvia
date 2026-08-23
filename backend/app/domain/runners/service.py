@@ -29,7 +29,7 @@ from app.infrastructure.artifact_storage.base import ArtifactStorage
 from app.infrastructure.database.base import utc_now
 from app.runtime.scheduler.workflow_scheduler import WorkflowScheduler
 from app.runtime.state_machine import NodeRunStatus, WorkflowRunStatus, transition_node_run
-from app.runtime.executor.trace import sanitize_error, sanitize_metadata
+from app.runtime.executor.trace import sanitize_artifacts, sanitize_error, sanitize_metadata, sanitize_output
 
 
 def get_runner(db: Session, runner_id: str, *, offline_after_seconds: int) -> Runner:
@@ -165,6 +165,14 @@ def runner_claim(db: Session, runner: Runner, *, lease_seconds: int) -> Executio
     if task is None:
         return None
 
+    # `SELECT ... JOIN` above filters RUNNING runs, but a pause/cancel may
+    # race between selection and the task state update. Lock and re-check the
+    # parent Run before the Runner's claim becomes an auto-start.
+    run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == task.workflow_run_id).with_for_update())
+    if run is None or WorkflowRunStatus(run.status) is not WorkflowRunStatus.RUNNING:
+        db.rollback()
+        return None
+
     lease_token = str(uuid4())
     claimed = (
         update(ExecutionTask)
@@ -213,6 +221,44 @@ def runner_claim(db: Session, runner: Runner, *, lease_seconds: int) -> Executio
     db.commit()
     db.refresh(task)
     return task
+
+
+def runner_task_heartbeat(
+    db: Session,
+    *,
+    runner: Runner,
+    task_id: str,
+    lease_token: str,
+    lease_seconds: int,
+) -> bool:
+    """Renew a Runner task lease and return its cooperative cancel signal.
+
+    Cancellation is durable: cancelling a Run (or fail-fast reconciliation)
+    marks its active task CANCELLED. The Runner polls this endpoint while a
+    local subprocess is running and kills the process group promptly. A
+    paused Run intentionally does not set the signal; pause is cooperative and
+    lets an already-started external call finish.
+    """
+    task = db.scalar(select(ExecutionTask).where(ExecutionTask.id == task_id).with_for_update())
+    if task is None or task.locked_by != runner.id or task.lease_token != lease_token:
+        raise RelayviaError("RUNNER_TASK_STALE", "Runner task is no longer owned by this Runner", status_code=409)
+
+    runner.last_seen_at = utc_now()
+    if task.status != ExecutionTaskStatus.RUNNING.value:
+        db.commit()
+        return True
+
+    run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == task.workflow_run_id).with_for_update())
+    if run is None or WorkflowRunStatus(run.status) in {
+        WorkflowRunStatus.FAILED,
+        WorkflowRunStatus.CANCELLED,
+        WorkflowRunStatus.COMPLETED,
+    }:
+        db.commit()
+        return True
+    task.lease_expires_at = utc_now() + timedelta(seconds=lease_seconds)
+    db.commit()
+    return False
 
 
 def _owns(task: ExecutionTask, runner_id: str, lease_token: str) -> bool:
@@ -277,7 +323,7 @@ def runner_submit(
             max_bytes=max_bytes,
         )
 
-    output = {**(result.get("output") or {}), **output_map}
+    output = {**sanitize_output(result.get("output") or {}), **output_map}
     if result.get("ok"):
         transition_execution_task(ExecutionTaskStatus(task.status), ExecutionTaskStatus.COMPLETED)
         task.status = ExecutionTaskStatus.COMPLETED.value
@@ -332,7 +378,7 @@ def runner_submit(
             node_run.status = NodeRunStatus.FAILED.value
             node_run.error_json = error
             node_run.execution_metadata_json = sanitize_metadata(result.get("metadata") or {})
-            node_run.artifact_refs_json = references
+            node_run.artifact_refs_json = sanitize_artifacts(references)
             node_run.finished_at = utc_now()
         record_event(
             db,

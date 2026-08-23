@@ -54,6 +54,16 @@ class RunnerClaimRead(BaseModel):
     lease_token: str
 
 
+class RunnerTaskHeartbeatRead(BaseModel):
+    """Response to a Runner's in-flight task heartbeat.
+
+    `cancel_requested` is a cooperative cancellation signal. The Runner must
+    terminate its child process group and must not submit a normal result.
+    """
+
+    cancel_requested: bool
+
+
 class RunnerResult(BaseModel):
     ok: bool
     output: dict[str, Any] = Field(default_factory=dict)

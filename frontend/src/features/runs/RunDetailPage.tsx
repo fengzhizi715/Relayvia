@@ -10,6 +10,7 @@ import {
   pauseWorkflowRun,
   resumeWorkflowRun,
   startWorkflowRun,
+  streamRunEvents,
   type ExecutionTask,
   type NodeRun,
   type WorkflowRun,
@@ -95,24 +96,19 @@ export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
     refetchInterval: 4000,
   });
 
-  // Live SSE: the API emits named lifecycle events and EventSource carries
-  // Last-Event-ID automatically after reconnecting.
+  // Fetch-backed SSE preserves VITE_API_BASE_URL and Authorization. Durable
+  // event-list polling fills any gap after the connection is re-established.
   useEffect(() => {
-    if (typeof EventSource === "undefined") return;
-    const source = new EventSource(`/api/workflow-runs/${runId}/events/stream`);
+    const controller = new AbortController();
     const refreshFromEvent = () => {
       void queryClient.invalidateQueries({ queryKey: ["workflow-run", runId] });
       void queryClient.invalidateQueries({ queryKey: ["run-events", runId] });
     };
-    const eventTypes = [
-      "workflow_started", "workflow_waiting", "workflow_resumed", "workflow_completed", "workflow_failed", "workflow_cancelled",
-      "node_queued", "node_started", "node_retrying", "node_waiting", "node_resumed", "node_completed", "node_failed", "node_skipped", "node_cancelled",
-    ];
-    source.onmessage = refreshFromEvent;
-    eventTypes.forEach((eventType) => source.addEventListener(eventType, refreshFromEvent));
+    void streamRunEvents(runId, { signal: controller.signal, onEvent: refreshFromEvent }).catch((error) => {
+      if (!(error instanceof DOMException && error.name === "AbortError")) refreshFromEvent();
+    });
     return () => {
-      eventTypes.forEach((eventType) => source.removeEventListener(eventType, refreshFromEvent));
-      source.close();
+      controller.abort();
     };
   }, [runId, queryClient]);
 

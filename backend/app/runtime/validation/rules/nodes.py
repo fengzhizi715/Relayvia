@@ -68,7 +68,20 @@ def _validate_logic(node, index: GraphIndex, issues: list[ValidationIssue]) -> N
                     field="config.duration_seconds",
                 )
             )
-    # parallel / merge / router counts are handled in the topology pass.
+    elif node.subtype == "router":
+        # Router is retained in the persisted Graph vocabulary for a future
+        # deterministic routing contract, but has no scheduler semantics yet.
+        # A draft may contain it; an immutable Version may not.
+        issues.append(
+            ValidationIssue(
+                code=ValidationCode.UNSUPPORTED_NODE_EXECUTION,
+                severity="error",
+                message="Router nodes cannot be published because Router execution semantics are not implemented",
+                node_id=node.id,
+                field="type",
+            )
+        )
+    # parallel / merge counts are handled in the topology pass.
 
 
 def _validate_condition(node, index: GraphIndex, issues: list[ValidationIssue]) -> None:

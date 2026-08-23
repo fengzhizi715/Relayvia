@@ -55,6 +55,19 @@ def _validate_agent(node, context: ValidationContext, issues: list[ValidationIss
                 field="config.agent_id",
             )
         )
+    if agent.connector_type not in {"http", "codex"}:
+        issues.append(
+            ValidationIssue(
+                code=ValidationCode.UNSUPPORTED_AGENT_CONNECTOR,
+                severity="error",
+                message=(
+                    f"Agent connector {agent.connector_type!r} cannot be published because no Execution Unit is installed"
+                ),
+                node_id=node.id,
+                field="config.agent_id",
+                details={"connector_type": agent.connector_type, "supported": ["http", "codex"]},
+            )
+        )
     elif agent.status == "unhealthy":
         issues.append(
             ValidationIssue(

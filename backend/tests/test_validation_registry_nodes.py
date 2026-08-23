@@ -53,6 +53,16 @@ def test_agent_unhealthy_is_warning_not_error():
     assert "AGENT_UNHEALTHY" in codes_of(result, severity="warning")
 
 
+def test_unimplemented_agent_connector_blocks_publishing():
+    result = run(
+        [IN, A, OUT],
+        [raw_edge("e1", "input", "a"), raw_edge("e2", "a", "output")],
+        agents={"agent-1": agent(connector_type="opencode")},
+    )
+    assert result.valid is False
+    assert "UNSUPPORTED_AGENT_CONNECTOR" in codes_of(result)
+
+
 def test_missing_service_and_action_references():
     node = service_node("s", service_id="", action_id="")
     result = run([IN, node, OUT], [raw_edge("e1", "input", "s"), raw_edge("e2", "s", "output")])
@@ -147,6 +157,13 @@ def test_wait_duration_and_mode():
     unsupported = raw_node("w2", "logic", "wait", config={"mode": "callback"})
     result = run([IN, unsupported, OUT], [raw_edge("e1", "input", "w2"), raw_edge("e2", "w2", "output")])
     assert "UNSUPPORTED_WAIT_MODE" in codes_of(result)
+
+
+def test_router_blocks_publishing_until_runtime_semantics_exist():
+    router = raw_node("r", "logic", "router", config={})
+    result = run([IN, router, OUT], [raw_edge("e1", "input", "r"), raw_edge("e2", "r", "output")])
+    assert result.valid is False
+    assert "UNSUPPORTED_NODE_EXECUTION" in codes_of(result)
 
 
 def test_approval_requires_title():

@@ -30,6 +30,9 @@ class NodeExecutionResult:
     error: ExecutionError | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
+    # Worker-only values used by the persistence boundary to redact an echoed
+    # credential. They must never be copied into a Run, Task or Trace.
+    sensitive_values: set[str] = field(default_factory=set, repr=False)
 
 
 class NodeExecutor:

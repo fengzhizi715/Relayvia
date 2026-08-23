@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,6 +11,7 @@ from app.domain.runners.schemas import (
     RunnerRegistrationRead,
     RunnerRead,
     RunnerRegister,
+    RunnerTaskHeartbeatRead,
     RunnerSubmitRequest,
 )
 from app.domain.runners.service import (
@@ -19,11 +21,13 @@ from app.domain.runners.service import (
     register_runner,
     runner_claim,
     runner_submit,
+    runner_task_heartbeat,
     to_read,
 )
 from app.domain.runners.models import Runner, RunnerStatus, runner_online
 from app.infrastructure.artifact_storage import get_artifact_storage
 from app.infrastructure.database.session import get_db
+from app.api.security import runner_enrollment_error
 
 router = APIRouter(prefix="/runners", tags=["runners"])
 
@@ -50,7 +54,11 @@ def _runner_token(x_relayvia_runner_token: str | None = Header(default=None)) ->
 
 
 @router.post("/register", response_model=RunnerRegistrationRead, status_code=status.HTTP_201_CREATED)
-def post_register(payload: RunnerRegister, db: Session = Depends(get_db)) -> RunnerRegistrationRead:
+def post_register(request: Request, payload: RunnerRegister, db: Session = Depends(get_db)) -> RunnerRegistrationRead | JSONResponse:
+    if payload.runner_id is None:
+        denied = runner_enrollment_error(request)
+        if denied is not None:
+            return denied
     runner, enrollment_token = register_runner(
         db,
         name=payload.name,
@@ -103,6 +111,26 @@ def post_claim(runner_id: str, runner_token: str | None = Depends(_runner_token)
         workspace=payload.get("workspace"),
         attempt=task.attempt,
         lease_token=task.lease_token or "",
+    )
+
+
+@router.post("/{runner_id}/tasks/{task_id}/heartbeat", response_model=RunnerTaskHeartbeatRead)
+def post_task_heartbeat(
+    runner_id: str,
+    task_id: str,
+    lease_token: str,
+    runner_token: str | None = Depends(_runner_token),
+    db: Session = Depends(get_db),
+) -> RunnerTaskHeartbeatRead:
+    runner = authenticate_runner(db, runner_id, runner_token)
+    return RunnerTaskHeartbeatRead(
+        cancel_requested=runner_task_heartbeat(
+            db,
+            runner=runner,
+            task_id=task_id,
+            lease_token=lease_token,
+            lease_seconds=_settings().worker_lease_seconds,
+        )
     )
 
 

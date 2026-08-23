@@ -36,7 +36,7 @@ from app.runtime.context import ContextResolver, UnresolvedContextReference
 from app.runtime.executor.base import NodeExecutionContext, NodeExecutionResult, NodeExecutor
 from app.runtime.executor.default import DefaultNodeExecutor
 from app.runtime.executor.result import ExecutionError
-from app.runtime.executor.trace import sanitize_artifacts, sanitize_error, sanitize_metadata
+from app.runtime.executor.trace import sanitize_artifacts, sanitize_error, sanitize_metadata, sanitize_output
 from app.runtime.recovery.execution_recovery import run_execution_recovery
 from app.runtime.scheduler.workflow_scheduler import WorkflowScheduler
 from app.runtime.state_machine import WorkflowRunStatus
@@ -166,7 +166,7 @@ async def _process_task(
         renewer.cancel()
 
     if result.ok:
-        output = dict(result.output or {})
+        output = sanitize_output(result.output or {}, sensitive_values=result.sensitive_values)
         artifact_refs: list[dict] = []
         if result.artifacts:
             try:
@@ -195,8 +195,8 @@ async def _process_task(
             worker_id,
             task.lease_token,
             output,
-            execution_metadata=sanitize_metadata(result.metadata),
-            artifacts=sanitize_artifacts(artifact_refs),
+            execution_metadata=sanitize_metadata(result.metadata, sensitive_values=result.sensitive_values),
+            artifacts=sanitize_artifacts(artifact_refs, sensitive_values=result.sensitive_values),
         )
         _reconcile_after(session_factory, scheduler, task.workflow_run_id)
     # ClaimedTask carries the attempt count from before `start()` increments
@@ -214,9 +214,9 @@ async def _process_task(
             task.id,
             worker_id,
             task.lease_token,
-            sanitize_error(error),
-            execution_metadata=sanitize_metadata(result.metadata),
-            artifacts=sanitize_artifacts(result.artifacts),
+            sanitize_error(error, sensitive_values=result.sensitive_values),
+            execution_metadata=sanitize_metadata(result.metadata, sensitive_values=result.sensitive_values),
+            artifacts=sanitize_artifacts(result.artifacts, sensitive_values=result.sensitive_values),
         )
         _reconcile_after(session_factory, scheduler, task.workflow_run_id)
 
@@ -237,8 +237,10 @@ async def run_worker(
     lease_seconds: int | None = None,
     renew_interval: float | None = None,
     recovery_interval: float | None = None,
+    concurrency: int | None = None,
     worker_id: str | None = None,
     storage: ArtifactStorage | None = None,
+    stop_event: asyncio.Event | None = None,
 ) -> None:
     settings = get_settings()
     session_factory = session_factory or get_session_factory()
@@ -247,40 +249,69 @@ async def run_worker(
     lease_seconds = lease_seconds if lease_seconds is not None else settings.worker_lease_seconds
     renew_interval = renew_interval if renew_interval is not None else settings.worker_lease_renew_interval
     recovery_interval = recovery_interval if recovery_interval is not None else settings.worker_recovery_interval
+    concurrency = max(1, min(concurrency if concurrency is not None else settings.worker_concurrency, 64))
 
     backend = MySQLExecutionBackend(session_factory, lease_seconds=lease_seconds)
     scheduler = WorkflowScheduler()
     executor = executor or DefaultNodeExecutor(session_factory)
 
     loop = asyncio.get_running_loop()
-    stop = asyncio.Event()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, stop.set)
-        except (NotImplementedError, RuntimeError):
-            break
+    stop = stop_event or asyncio.Event()
+    if stop_event is None:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, stop.set)
+            except (NotImplementedError, RuntimeError):
+                break
 
+    active: set[asyncio.Task[None]] = set()
     last_recovery = 0.0
-    while not stop.is_set():
-        now = time.monotonic()
-        if now - last_recovery >= recovery_interval:
-            await run_execution_recovery(backend=backend, scheduler=scheduler, session_factory=session_factory)
-            last_recovery = now
+    try:
+        while not stop.is_set():
+            now = time.monotonic()
+            if now - last_recovery >= recovery_interval:
+                await run_execution_recovery(backend=backend, scheduler=scheduler, session_factory=session_factory)
+                last_recovery = now
 
-        task = await backend.claim(worker_id)
-        if task is None:
-            await asyncio.sleep(poll_interval)
-            continue
-        await _process_task(
-            task,
-            backend=backend,
-            scheduler=scheduler,
-            session_factory=session_factory,
-            executor=executor,
-            worker_id=worker_id,
-            renew_interval=renew_interval,
-            storage=storage,
-        )
+            # Fill only the available slots. Claiming remains durable and
+            # atomic; concurrency only changes how many already-owned tasks
+            # this process can execute at once.
+            while len(active) < concurrency and not stop.is_set():
+                task = await backend.claim(worker_id)
+                if task is None:
+                    break
+                active.add(
+                    asyncio.create_task(
+                        _process_task(
+                            task,
+                            backend=backend,
+                            scheduler=scheduler,
+                            session_factory=session_factory,
+                            executor=executor,
+                            worker_id=worker_id,
+                            renew_interval=renew_interval,
+                            storage=storage,
+                        )
+                    )
+                )
+
+            if not active:
+                await asyncio.sleep(poll_interval)
+                continue
+            done, active = await asyncio.wait(active, timeout=poll_interval, return_when=asyncio.FIRST_COMPLETED)
+            for finished in done:
+                # _process_task converts execution failures into durable Node
+                # results. Keep a defensive guard so one implementation bug
+                # never takes down the whole Worker loop.
+                try:
+                    finished.result()
+                except Exception as exc:  # pragma: no cover - defensive
+                    print(f"[worker] unexpected task failure: {exc}")
+    finally:
+        # SIGTERM stops claiming new work but lets owned tasks finish and
+        # report their result, preserving the existing at-least-once contract.
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
 
 
 def main() -> None:

@@ -16,6 +16,9 @@ const api = vi.hoisted(() => ({
   cancelWorkflowRun: vi.fn(),
   getNodeRuns: vi.fn(),
   getNodeRun: vi.fn(),
+  getRunEvents: vi.fn().mockResolvedValue([]),
+  getRunExecutionTasks: vi.fn().mockResolvedValue([]),
+  streamRunEvents: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../api/client", () => ({

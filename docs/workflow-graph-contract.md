@@ -1,6 +1,6 @@
 # Relayvia Workflow Graph Contract 1.0
 
-本文件定义 Phase 3 的 Workflow Definition Contract。它描述“要编排什么”，不描述 Runtime 状态；`task_status`、`started_at`、`finished_at`、日志、重试计数和输出结果属于后续 Run / NodeRun，而不是 Graph。
+本文件定义 Relayvia 的 Workflow Definition Contract。它描述“要编排什么”，不描述 Runtime 状态；`task_status`、`started_at`、`finished_at`、日志、重试计数和输出结果属于 Run / NodeRun，而不是 Graph。
 
 ## Draft 与 Version
 
@@ -15,7 +15,7 @@ Workflow
 
 `POST /api/workflows/{id}/versions` 在事务中锁定 Workflow 行，校验 Draft，复制 Graph JSON，并生成下一个整数 Version。复制后的 `WorkflowVersion.graph_json` 不再受 Draft 修改影响；历史 Version 没有 PUT 或 DELETE API。发布第一个 Version 会把 Workflow 标记为 `active`。没有 Version 的 Workflow 可以 hard delete；已有 Version 的 Workflow 的删除操作改为 `archived`，以保留历史定义。
 
-当前版本只保存 Registry ID，不复制 Agent、Service 或 Service Action 配置。后续 Runtime 需要决定使用 Registry 当前配置，还是在发布时保存 Invocation Snapshot；Phase 3 暂不预设 Runtime 策略。
+Graph 只保存 Registry ID，不复制 Agent、Service 或 Service Action 配置。Run 创建时会生成非 Secret 的 Invocation Snapshot，因此后续 Registry 修改不会影响历史 Run。
 
 ## Graph 顶层结构
 
@@ -29,7 +29,7 @@ Workflow
 }
 ```
 
-`schema_version` 是显式的 Graph Contract 版本。Phase 3 只接受 `1.0`。`nodes` 和 `edges` 是数组；`variables` 是 Workflow 级变量定义；`metadata` 只用于非核心扩展，不能代替核心字段。
+`schema_version` 是显式的 Graph Contract 版本。当前只接受 `1.0`。`nodes` 和 `edges` 是数组；`variables` 是 Workflow 级变量定义；`metadata` 只用于非核心扩展，不能代替核心字段。
 
 ## Node 基础 Contract
 
@@ -121,7 +121,7 @@ Condition 的 true/false 分支使用 Edge 的 `source_handle`，不在 Node Con
 * `approval`：`config` 为 `title`、可选 `description`、`allow_reject`。
 * `input`：`config.form_schema` 为 JSON Schema。
 
-Phase 3 只保存 Contract，不实现 WAITING、审批或恢复 Runtime。
+Graph 只定义 Human Node Contract；其 WAITING、审批与恢复语义由 Runtime 执行。
 
 ### Data
 
@@ -140,7 +140,7 @@ Phase 3 只保存 Contract，不实现 WAITING、审批或恢复 Runtime。
 {{run.some_runtime_value}}
 ```
 
-后端能够 Parse、Validate Syntax 并提取 Node Dependency；Phase 3 不 Resolve Runtime Value。引用到不存在的 Node 会被拒绝。
+后端能够 Parse、Validate Syntax 并提取 Node Dependency；Runtime 在执行时 Resolve Value。引用到不存在的 Node 会被拒绝。
 
 ## Variables
 
@@ -171,7 +171,7 @@ Phase 3 只保存 Contract，不实现 WAITING、审批或恢复 Runtime。
 }
 ```
 
-Edge ID 必须唯一，`source` 和 `target` 必须引用当前 Graph 中存在的 Node。`source_handle` 可表达 Condition 分支；Parallel/Merge 的结构也由 Edge 表达。Phase 5 才做完整的拓扑、Cycle、Branch 和 Schema Compatibility Validation。
+Edge ID 必须唯一，`source` 和 `target` 必须引用当前 Graph 中存在的 Node。`source_handle` 可表达 Condition 分支；Parallel/Merge 的结构也由 Edge 表达。完整的拓扑、Cycle、Branch 和 Schema Compatibility Validation 会在 Version 创建前执行。
 
 ## Contract-level Validation
 
@@ -185,4 +185,4 @@ Draft PUT 和 Create Version 都执行同一组校验：
 * Agent Node 的 Agent 存在；Service Node 的 Service 和 Action 存在且匹配。
 * disabled Agent/Service/Action 允许被保存，但返回 Warning。
 
-这不是完整 Workflow Graph Validation；Runtime、拓扑、输入输出兼容性和执行可行性留给后续阶段。
+Draft 保存只执行 Contract 校验；完整的 Runtime、拓扑、输入输出兼容性与执行可行性检查在创建 Version 时执行。

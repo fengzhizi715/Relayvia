@@ -1,5 +1,5 @@
 """Runtime package for Relayvia execution-plane concerns.
 
-Phase 5 introduces the Workflow Graph Validation Engine here. Future phases
-will add the Workflow Runtime (orchestrator / executor / scheduler).
+Contains the Workflow Graph Validation Engine and the durable Runtime
+(orchestrator / executor / scheduler) used by the execution plane.
 """

@@ -8,6 +8,7 @@ import { CredentialsPage } from "./features/credentials/CredentialsPage";
 import { RunsPage } from "./features/runs/RunsPage";
 import { RunnerListPage } from "./features/runners/RunnerListPage";
 import { ServicesPage } from "./features/services/ServicesPage";
+import { WorkspaceListPage } from "./features/workspaces/WorkspaceListPage";
 import { WorkflowsPage } from "./features/workflows/WorkflowsPage";
 import { useWorkflowBuilderStore } from "./workflow/store/workflowBuilderStore";
 
@@ -19,6 +20,7 @@ const sections: Array<{ id: AppSection; label: string }> = [
   { id: "workflows", label: "Workflows" },
   { id: "runs", label: "Runs" },
   { id: "runners", label: "Runners" },
+  { id: "workspaces", label: "Workspaces" },
 ];
 
 export default function App() {
@@ -62,7 +64,7 @@ export default function App() {
         </nav>
         <div className="sidebar-footer">
           <span className="pulse-dot" />
-          Phase 3 graph contract
+          Durable runtime ready
         </div>
       </aside>
 
@@ -78,13 +80,13 @@ export default function App() {
           />
         </header>
 
-        {activeSection === "agents" ? <AgentsPage /> : activeSection === "services" ? <ServicesPage /> : activeSection === "credentials" ? <CredentialsPage /> : activeSection === "workflows" ? <WorkflowsPage /> : activeSection === "runs" ? <RunsPage /> : activeSection === "runners" ? <RunnerListPage /> : <>
+        {activeSection === "agents" ? <AgentsPage /> : activeSection === "services" ? <ServicesPage /> : activeSection === "credentials" ? <CredentialsPage /> : activeSection === "workflows" ? <WorkflowsPage /> : activeSection === "runs" ? <RunsPage /> : activeSection === "runners" ? <RunnerListPage /> : activeSection === "workspaces" ? <WorkspaceListPage /> : <>
         <section className="hero-card">
           <div>
             <p className="eyebrow">FOUNDATION READY</p>
             <h3>Connect capabilities. Orchestrate work.</h3>
             <p className="hero-copy">
-              Relayvia connects existing Agents and Services so future workflows can be validated, executed, and traced
+              Relayvia connects existing Agents and Services so workflows can be validated, executed, and traced
               from one control plane.
             </p>
           </div>
@@ -95,7 +97,7 @@ export default function App() {
           </div>
         </section>
 
-        <section className="status-grid" aria-label="Phase 1 status">
+        <section className="status-grid" aria-label="Platform status">
           <article className="status-card">
             <p className="eyebrow">API</p>
             <h3>{health.isSuccess ? health.data.service : "Waiting for FastAPI"}</h3>
@@ -103,8 +105,8 @@ export default function App() {
           </article>
           <article className="status-card">
             <p className="eyebrow">NEXT LAYER</p>
-            <h3>Workflow contract</h3>
-            <p>Phase 3 now provides immutable workflow versions and a validated Graph Contract for the future Builder.</p>
+            <h3>Durable orchestration</h3>
+            <p>Immutable workflow versions, validated graph contracts, durable queueing, and independent Workers are active.</p>
           </article>
           <article className="status-card status-card--accent">
             <p className="eyebrow">RUNTIME PRINCIPLE</p>

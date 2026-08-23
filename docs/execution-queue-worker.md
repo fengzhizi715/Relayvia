@@ -1,6 +1,6 @@
 # Relayvia Execution Queue · Scheduler · Worker
 
-Phase 7 在不引入 Redis / Celery / RabbitMQ 的前提下，建立 Relayvia 自己的
+Relayvia 在不引入 Redis / Celery / RabbitMQ 的前提下，使用自己的
 **MySQL-backed Execution Queue + Scheduler + 独立 Worker**。它回答的问题是：
 
 > 一个应该执行的 Node，如何可靠地从 Workflow Runtime 到达 Worker。
@@ -90,12 +90,13 @@ start
  → recovery（recover expired + promote due retries + reconcile active runs）
  → claim
  → no task → sleep(poll) → loop
- → process（start → executor → complete/fail/retry → scheduler）
+ → 以有上限的并发槽位 process（start → executor → complete/fail/retry → scheduler）
 ```
 
 - Worker ID：`worker_<hostname>_<pid>_<uuid>`，用于 `locked_by`。
-- Poll Interval 默认 0.5s；Recovery Interval 默认 30s。
-- SIGINT / SIGTERM：停止领取新任务、安全退出（当前 Task 尽力完成）。
+- Poll Interval 默认 0.5s；Recovery Interval 默认 30s；每个 Worker 默认最多并发
+  4 个 Task（`RELAYVIA_WORKER_CONCURRENCY`，代码上限 64）。
+- SIGINT / SIGTERM：停止领取新任务，已领取 Task 继续写回结果后退出。
 
 ## Lease / Lease Token（Fencing）
 
@@ -175,7 +176,7 @@ run_execution_recovery(
 - 纯引用（整串只有一个 Reference）**保留原始类型**（string/number/boolean/object/array/null）；
   模板字符串插值结果为 string；dict / list 递归解析。
 - 缺失值抛 `UNRESOLVED_CONTEXT_REFERENCE`，Worker 直接产生结构化失败，**不调用 Connector**。
-- 静态可见的错误（如 `{{nodes.not_exist.output.x}}`）由 Phase 5 Validation 在 Version 阶段拒绝；
+- 静态可见的错误（如 `{{nodes.not_exist.output.x}}`）由 Graph Validation 在 Version 阶段拒绝；
   运行时缺失（字段不存在、上游未产出）由 Resolver 兜底——两层机制。
 - **NodeRun.input_json** 持久化真正传给 Execution Unit 的解析结果（Trace 用）；
   Credential 不在其中（`credential_id` 引用单独由 Connector 注入，且不进入 Trace）。
@@ -245,21 +246,24 @@ Relayvia Runner 执行。当前 Server Worker 会返回 `RUNNER_REQUIRED`，不�
 
 ### 安全与未实现
 
-Credential 只在 Worker 内按 `credential_id` 临时解密，绝不进入 Snapshot、Output、Task
-Payload 或 Error；失败结果也不含 Secret。Connector metadata 和 Artifact 引用会经过
-密钥字段脱敏与大小限制后持久化到 NodeRun Trace。Human、Wait、Router、Local/Custom Agent 仍返回
-明确的 `UNSUPPORTED_NODE_EXECUTION`，不会伪装为已执行。HTTP 响应体限制为 1MB
+Credential 只在 Worker 内按 `credential_id` 临时解密，绝不进入 Snapshot、Task Payload 或
+Error。Connector / Runner 的 **Output、metadata、error 和 Artifact metadata** 都会经过
+密钥字段、常见内嵌 secret 格式与当前 Credential 值的脱敏后才持久化到 NodeRun Trace。Router、
+Local/Custom/OpenCode/Cursor Agent 没有 Execution Unit 时，Version Validation 会明确拒绝发布，
+不会伪装为可运行。HTTP 响应体限制为 1MB
 （`MAX_RESPONSE_BYTES`），超限报 `RESPONSE_TOO_LARGE`（非 retryable）。
 
 ## Branch and Run Gating
 
 - Condition 完成后，Scheduler 只激活 `selected_branch` 对应的 Edge；未选中分支及其
   无活跃入边的后代递归标记为 `SKIPPED`。汇合节点只等待仍活跃的入边。
-- **Pause 是协作式的**：已在执行中的外部调用允许完成，但 Task 的 claim / start 都要求
-  父 Run 为 `RUNNING`；已 claim 但尚未 start 的 Task 会回到 `PENDING`，Resume 后继续。
-- **Failure 是 fail-fast**：一个 Node 耗尽重试进入 FAILED 后，Scheduler 将同一 Run
-  其他非终态 Task / NodeRun 取消。无法强制中断已经发出的外部 HTTP 请求，但其迟到结果
-  会被已取消 Task 的 fencing 拒绝。
+- **Pause 是协作式的**：暂停不会主动终止已经开始的外部调用；它只冻结新 claim/start，
+  已 claim 未 start 的 Task 会回到 `PENDING`，Resume 后继续。
+- **Cancel / Failure 是 fail-fast**：一个 Node 耗尽重试进入 FAILED 后，Scheduler 将同一
+  Run 其他非终态 Task / NodeRun 取消。已执行本地命令的 Runner 通过
+  `POST /api/runners/{id}/tasks/{task_id}/heartbeat` 收到 durable cancel signal 并终止其
+  进程组；迟到结果受 lease / 状态 fencing 拒绝。已发出的第三方 HTTP 请求仍无法被平台
+  强制撤销，但其结果同样不会写回。
 
 ## Human Approval / Human Input / Wait
 
@@ -290,8 +294,11 @@ WAITING**，然后**完成并释放 ExecutionTask**——Worker 不因等待而�
   producer_node_run_id / type / name / uri / size / content_type / metadata）；
   文件内容在 `ArtifactStorage`。
 - **LocalArtifactStorage**：文件存于 `data/artifacts/<id>`（`RELAYVIA_ARTIFACT_STORAGE_DIR`
-  可配置），key 严格校验（`[A-Za-z0-9_-]+` + root 限制），**防止 Path Traversal**。
-  Storage 是抽象接口，未来可换 S3 / MinIO / OSS。
+  可配置），key 严格校验（`[A-Za-z0-9_-]+` + root 限制），**防止 Path Traversal**。它只
+  适用于 API 与 Worker 共享同一持久化文件系统的单机/共享卷部署。
+- **S3ArtifactStorage**：设置 `RELAYVIA_ARTIFACT_STORAGE_BACKEND=s3` 与
+  `RELAYVIA_ARTIFACT_S3_BUCKET` 后，API 与 Worker 通过 S3 / MinIO 兼容对象存储读写同一
+  object key；认证使用 boto3 标准 provider chain，不把对象存储密钥放入 Credential Registry。
 - **产生**：`ExecutionResult.artifacts` 是 Artifact Candidate——
   `{name, type, content_type, content | uri, output_key, metadata}`。
   Server Worker 只接收受大小限制的内存 `content` 或 HTTP(S) 外部 URI，**绝不读取
@@ -323,8 +330,9 @@ Workflow 执行过程以结构化 `RunEvent` 持久化（`run_events` 表，自�
   `after_id`）续传未消费事件；
   Run 进入终态后流自然结束。数据库始终是 durable Source of Truth。
 - **安全**：事件 payload 由 Runtime 构造（不含 NodeRun output 正文），Credential /
-  Secret 不进入 Trace / SSE（复用 Phase 8/12 脱敏边界）。
-- **前端**：Run Detail 显示 Event Timeline，SSE 实时刷新 Run 与节点状态。
+  Secret 不进入 Trace / SSE（复用统一脱敏边界）。
+- **前端**：Run Detail 以 fetch 流消费 SSE，因此会携带 Control Plane Authorization 并使用
+  `VITE_API_BASE_URL`；不会将访问令牌置于 SSE URL 中。
 
 ## Relayvia Runner
 
@@ -411,25 +419,50 @@ Registry 的 `connector_type`）。
 
 - **Workflow Worker**：Relayvia Server 侧的执行基础设施进程。
 - **Relayvia Runner**：用户笔记本 / Mac mini / 内网 / Edge 的本地执行组件。
-- Phase 7 不实现 Runner。
+- Runner 与 Worker 都使用有上限的并发槽位。Runner 默认 2 个
+  （`RELAYVIA_RUNNER_CONCURRENCY`，代码上限 32）；共享本地仓库必须保持 1，
+  并发 Coding 任务应使用 `worktree` Workspace 隔离。
 
 ## 当前边界
 
-已实现：Relayvia Runner dispatch、Codex Adapter、Tool / Codex Worktree 执行。尚未实现：
-OpenCode/Cursor Adapter、Local/Custom Agent 执行、Router Runtime，以及远程 Artifact
-Storage（S3 / MinIO / OSS）。Human Approval / Human Input、Wait Timer、Run Trace + SSE 与
-Local Artifact Storage 已实现。
+已实现：Relayvia Runner dispatch、Codex Adapter、Tool / Codex Worktree 执行，以及 S3/MinIO
+兼容 Artifact Storage。尚未实现：OpenCode/Cursor Adapter、Local/Custom Agent 执行、Router
+Runtime。上述无执行器能力会在 Version Validation 阶段被拒绝。Human Approval / Human Input、
+Wait Timer、Run Trace + SSE 与 Local Artifact Storage 已实现。
 
 ## 配置
 
 ```text
 RELAYVIA_WORKER_ID
 RELAYVIA_WORKER_POLL_INTERVAL   (默认 0.5)
+RELAYVIA_WORKER_CONCURRENCY     (默认 4，代码上限 64)
 RELAYVIA_WORKER_LEASE_SECONDS   (默认 60)
 RELAYVIA_WORKER_LEASE_RENEW_INTERVAL (默认 20)
 RELAYVIA_WORKER_RECOVERY_INTERVAL   (默认 30)
 RELAYVIA_ARTIFACT_STORAGE_DIR        (默认 data/artifacts)
 RELAYVIA_ARTIFACT_MAX_BYTES          (默认 104857600)
+RELAYVIA_ARTIFACT_STORAGE_BACKEND    (local|s3，默认 local)
+RELAYVIA_ARTIFACT_S3_BUCKET          (s3 后端必填)
+RELAYVIA_ARTIFACT_S3_PREFIX          (默认 relayvia/artifacts)
+RELAYVIA_ARTIFACT_S3_REGION          (可选)
+RELAYVIA_ARTIFACT_S3_ENDPOINT_URL    (MinIO/S3 兼容端点可选)
 RELAYVIA_RUNNER_ROOT                 (Runner 必填；本地仓库与 worktree 的上级目录)
 RELAYVIA_RUNNER_ID_FILE              (默认 ~/.relayvia/runner.json，权限 0600)
+RELAYVIA_RUNNER_CONCURRENCY          (默认 2，代码上限 32)
+RELAYVIA_RUNNER_SANDBOX_COMMAND      (生产环境必填的 sandbox wrapper 可执行文件)
+RELAYVIA_RUNNER_ALLOW_UNSANDBOXED_EXECUTION (仅可信本地开发；默认 false)
 ```
+
+## P0 Security Boundary
+
+- **Control Plane**：除 `/api/health` 与 Runner 数据面接口外，所有 API 都要求
+  `Authorization: Bearer <RELAYVIA_CONTROL_PLANE_TOKEN>`（也可使用
+  `X-Relayvia-Control-Plane-Token`）。令牌未配置时 fail closed。
+- **Runner enrollment**：首次 `POST /api/runners/register` 必须携带
+  `X-Relayvia-Runner-Enrollment-Token`，或使用有效的 Control Plane Token。之后的
+  heartbeat / claim / task heartbeat / submit 使用 Runner 自己的一次性 enrollment token。
+- **Shell isolation**：Runner Root 不是 Linux/macOS 沙箱。Runner 默认要求外部 Sandbox
+  Wrapper；只有显式设置 `RELAYVIA_RUNNER_ALLOW_UNSANDBOXED_EXECUTION=true` 才会在可信
+  开发机以 `/bin/sh -lc` 执行命令。
+- **URL policy**：默认拒绝解析到私网、loopback、link-local、reserved 地址的 HTTP URL；
+  Local/Edge 部署可显式启用 `RELAYVIA_ALLOW_PRIVATE_NETWORK_URLS=true`。

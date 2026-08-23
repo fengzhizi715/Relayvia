@@ -192,6 +192,24 @@ def test_register_candidates_bytes_external_and_same_run_reference(memory_db, st
         assert storage.open(patch_artifact.id).read() == b"patch-content"
 
 
+def test_artifact_candidate_metadata_is_redacted(memory_db, storage):
+    _, factory = memory_db
+    with factory() as db:
+        run = make_run(db, chain_graph(), {"schema_version": "2"})
+        node_run = db.scalar(select(NodeRun).where(NodeRun.workflow_run_id == run.id, NodeRun.node_id == "tool_a"))
+        register_artifact_candidates(
+            db,
+            workflow_run_id=run.id,
+            producer_node_run_id=node_run.id,
+            candidates=[{"name": "report.txt", "content": b"report", "metadata": {"token": "must-not-persist"}}],
+            storage=storage,
+            max_bytes=1024,
+        )
+        db.commit()
+        artifact = db.scalar(select(Artifact).where(Artifact.workflow_run_id == run.id))
+        assert artifact.metadata_json == {"token": "***REDACTED***"}
+
+
 def test_register_candidates_rejects_local_path_and_oversized_content(memory_db, storage, tmp_path):
     _, factory = memory_db
     with factory() as db:

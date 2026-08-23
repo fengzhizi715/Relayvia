@@ -214,6 +214,78 @@ def test_runner_result_is_idempotent(client, memory_db):
     assert second.status_code == 409
 
 
+def test_cancelled_runner_task_is_signalled_and_cannot_publish_result(client, memory_db):
+    _, factory = memory_db
+    with factory() as db:
+        run = make_run(db, tool_graph("sleep 30"))
+        WorkflowScheduler(default_max_attempts=1).schedule_ready_nodes(db, run.id)
+        db.commit()
+
+    runner = register_runner(client)
+    claimed = client.post(f"/api/runners/{runner['id']}/claim", headers=runner_headers(runner)).json()
+    assert claimed is not None
+    assert client.post(f"/api/workflow-runs/{claimed['workflow_run_id']}/cancel").status_code == 200
+
+    cancellation = client.post(
+        f"/api/runners/{runner['id']}/tasks/{claimed['task_id']}/heartbeat",
+        params={"lease_token": claimed["lease_token"]},
+        headers=runner_headers(runner),
+    )
+    assert cancellation.status_code == 200
+    assert cancellation.json() == {"cancel_requested": True}
+    stale = client.post(
+        f"/api/runners/{runner['id']}/submit-result",
+        json={"task_id": claimed["task_id"], "lease_token": claimed["lease_token"], "result": {"ok": True, "output": {"stdout": "must not persist"}, "metadata": {}, "artifacts": [], "error": None}},
+        headers=runner_headers(runner),
+    )
+    assert stale.status_code == 409
+
+
+def test_runner_output_is_redacted_before_becoming_context(client, memory_db):
+    _, factory = memory_db
+    with factory() as db:
+        run = make_run(db, tool_graph())
+        WorkflowScheduler(default_max_attempts=1).schedule_ready_nodes(db, run.id)
+        db.commit()
+
+    runner = register_runner(client)
+    claimed = client.post(f"/api/runners/{runner['id']}/claim", headers=runner_headers(runner)).json()
+    result = {
+        "ok": True,
+        "output": {"token": "plain-secret", "echo": "Authorization: plain-secret"},
+        "metadata": {"password": "plain-secret"},
+        "artifacts": [],
+        "error": None,
+    }
+    assert client.post(
+        f"/api/runners/{runner['id']}/submit-result",
+        json={"task_id": claimed["task_id"], "lease_token": claimed["lease_token"], "result": result},
+        headers=runner_headers(runner),
+    ).status_code == 200
+    with factory() as db:
+        node_run = db.get(NodeRun, claimed["node_run_id"])
+        assert node_run.output_json == {"token": "***REDACTED***", "echo": "Authorization:***REDACTED***"}
+        assert node_run.execution_metadata_json == {"password": "***REDACTED***"}
+
+
+def test_runner_cancellation_event_kills_local_process_group(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "app.runners.runner.get_settings",
+        lambda: Settings(runner_root=str(tmp_path), runner_allow_unsandboxed_execution=True, _env_file=None),
+    )
+
+    async def execute_and_cancel():
+        cancelled = asyncio.Event()
+        future = asyncio.create_task(execute_task({"config": {"command": "sleep 30", "timeout_seconds": 60}}, cancel_event=cancelled))
+        await asyncio.sleep(0.1)
+        cancelled.set()
+        return await future
+
+    result = asyncio.run(execute_and_cancel())
+    assert result["ok"] is False
+    assert result["error"]["code"] == "RUNNER_CANCELLED"
+
+
 def test_runner_lost_recovers_via_lease(client, memory_db):
     _, factory = memory_db
     with factory() as db:

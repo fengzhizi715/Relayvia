@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type AppSection = "overview" | "agents" | "services" | "credentials" | "workflows" | "runs" | "runners";
+export type AppSection = "overview" | "agents" | "services" | "credentials" | "workflows" | "runs" | "runners" | "workspaces";
 
 type AppStore = {
   activeSection: AppSection;
