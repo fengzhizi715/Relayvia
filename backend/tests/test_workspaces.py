@@ -15,7 +15,7 @@ from app.infrastructure.execution_backend.mysql import MySQLExecutionBackend
 from app.runtime.executor.default import DefaultNodeExecutor
 from app.runtime.scheduler.workflow_scheduler import WorkflowScheduler
 from app.runtime.state_machine import NodeRunStatus, WorkflowRunStatus
-from app.runners.runner import WorkspaceError, execute_task, prepare_workspace
+from app.runners.runner import WorkspaceError, cleanup_workspace, execute_task, prepare_workspace
 from app.workers.workflow_worker import _process_task
 
 
@@ -121,6 +121,19 @@ def test_prepare_local_repository(tmp_path):
     assert Path(path) == repo.resolve()
 
 
+def test_cleanup_workspace_removes_only_managed_worktree(tmp_path):
+    repo = tmp_path / "repo"
+    make_git_repo(repo)
+    descriptor = {"repository": str(repo), "strategy": "worktree", "branch": "relayvia/run-1/cleanup", "base_branch": None}
+    path, _, _ = asyncio.run(prepare_workspace(descriptor, tmp_path))
+    assert Path(path).exists()
+
+    asyncio.run(cleanup_workspace({**descriptor, "path": path}, tmp_path))
+
+    assert not Path(path).exists()
+    assert repo.exists()
+
+
 def test_prepare_rejects_invalid_repository_and_escape(tmp_path):
     not_a_repo = tmp_path / "not-a-repo"
     not_a_repo.mkdir()
@@ -202,11 +215,27 @@ def test_parallel_workspaces_isolate_modifications(client, memory_db, tmp_path, 
         branches = {ws.branch for ws in workspaces}
         assert len(paths) == 2  # isolated worktrees
         assert len(branches) == 2  # unique branches
-        assert all(ws.status == "released" for ws in workspaces)
+        assert all(ws.status == "releasing" for ws in workspaces)
         for ws in workspaces:
             assert ws.path is not None
             assert Path(ws.path).is_relative_to(tmp_path)
             assert ws.path != str(repo)
+    for _ in range(2):
+        cleanup = client.post(f"/api/runners/{runner['id']}/workspace-cleanups/claim", headers=headers)
+        assert cleanup.status_code == 200
+        descriptor = cleanup.json()
+        assert descriptor is not None
+        asyncio.run(cleanup_workspace(descriptor, tmp_path))
+        completed = client.post(
+            f"/api/runners/{runner['id']}/workspace-cleanups/{descriptor['workspace_id']}/complete",
+            json={"ok": True},
+            headers=headers,
+        )
+        assert completed.status_code == 200
+        assert not Path(descriptor["path"]).exists()
+    with factory() as db:
+        workspaces = db.scalars(select(Workspace).where(Workspace.workflow_run_id == run_id)).all()
+        assert all(ws.status == "released" for ws in workspaces)
     # The base repository must be untouched by the parallel modifications.
     assert (repo / "frontend.txt").exists() is False
     assert (repo / "backend.txt").exists() is False

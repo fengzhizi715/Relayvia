@@ -23,7 +23,7 @@ from app.infrastructure.execution_backend.mysql import MySQLExecutionBackend
 from app.runtime.executor.default import DefaultNodeExecutor
 from app.runtime.scheduler.workflow_scheduler import WorkflowScheduler
 from app.runtime.state_machine import NodeRunStatus, WorkflowRunStatus
-from app.runners.runner import execute_task
+from app.runners.runner import cleanup_workspace, execute_task
 from app.workers.workflow_worker import _process_task
 
 
@@ -178,6 +178,16 @@ def test_coding_agent_end_to_end(client, memory_db, tmp_path, monkeypatch):
     )
     assert submitted.status_code == 200
 
+    cleanup = client.post(f"/api/runners/{runner['id']}/workspace-cleanups/claim", headers=headers)
+    assert cleanup.status_code == 200 and cleanup.json() is not None
+    descriptor = cleanup.json()
+    asyncio.run(cleanup_workspace(descriptor, tmp_path))
+    assert client.post(
+        f"/api/runners/{runner['id']}/workspace-cleanups/{descriptor['workspace_id']}/complete",
+        json={"ok": True},
+        headers=headers,
+    ).status_code == 200
+
     drive_worker(factory, scheduler)
     with factory() as db:
         assert db.get(WorkflowRun, run_id).status == WorkflowRunStatus.COMPLETED.value
@@ -186,6 +196,7 @@ def test_coding_agent_end_to_end(client, memory_db, tmp_path, monkeypatch):
         assert coder_run.output_json["patch"].startswith("artifact://")
         workspace = db.scalar(select(Workspace).where(Workspace.node_run_id == coder_run.id))
         assert workspace.status == "released"
+        assert not Path(descriptor["path"]).exists()
         # The file change is real: the worktree contains the modification.
         import base64
         artifact_id = coder_run.output_json["patch"][len("artifact://"):]

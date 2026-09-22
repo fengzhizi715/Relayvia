@@ -411,6 +411,47 @@ def test_parallel_approval_merge(memory_db, http_test_server):
     assert NodeRunStatus(node_runs(factory, run_id)["merge"].status) is NodeRunStatus.COMPLETED
 
 
+def test_parallel_waiting_branch_does_not_block_queued_sibling(memory_db, http_test_server):
+    """Regression: a Human branch may park before a queued sibling starts."""
+    _, factory = memory_db
+    graph = parallel_approval_merge_graph()
+    # Queue approval before the Agent to reproduce the ordering that used to
+    # move the parent Run to WAITING and strand the Agent task.
+    approval = next(node for node in graph["nodes"] if node["id"] == "approval")
+    graph["nodes"].remove(approval)
+    graph["nodes"].insert(2, approval)
+    with factory() as db:
+        run = make_run(db, graph, registry_snapshot(http_test_server))
+        run_id = run.id
+        scheduler = WorkflowScheduler(default_max_attempts=1)
+        scheduler.schedule_ready_nodes(db, run.id)
+        db.commit()
+
+    drive(factory, scheduler)
+    nodes = node_runs(factory, run_id)
+    assert NodeRunStatus(nodes["approval"].status) is NodeRunStatus.WAITING
+    assert NodeRunStatus(nodes["a"].status) is NodeRunStatus.COMPLETED
+    assert run_status(factory, run_id) is WorkflowRunStatus.WAITING
+
+
+def test_approval_is_actionable_while_parallel_sibling_is_running(client, memory_db, http_test_server):
+    _, factory = memory_db
+    with factory() as db:
+        run = make_run(db, parallel_approval_merge_graph(), registry_snapshot(http_test_server))
+        run_id = run.id
+        rows = {row.node_id: row for row in db.scalars(select(NodeRun).where(NodeRun.workflow_run_id == run.id)).all()}
+        rows["approval"].status = NodeRunStatus.WAITING.value
+        rows["approval"].waiting_reason = "HUMAN_APPROVAL"
+        rows["a"].status = NodeRunStatus.RUNNING.value
+        db.commit()
+        approval_id = rows["approval"].id
+
+    response = client.post(f"/api/node-runs/{approval_id}/approve")
+    assert response.status_code == 200
+    assert response.json()["status"] == NodeRunStatus.COMPLETED.value
+    assert run_status(factory, run_id) is WorkflowRunStatus.RUNNING
+
+
 def test_condition_skipped_approval_does_not_wait(memory_db, http_test_server):
     _, factory = memory_db
     with factory() as db:

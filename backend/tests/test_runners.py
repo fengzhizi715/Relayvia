@@ -142,6 +142,34 @@ def test_runner_mutations_require_its_enrollment_token(client):
     ).status_code == 200
 
 
+def test_runner_can_be_disabled_revoked_and_rotated(client):
+    runner = register_runner(client)
+    headers = runner_headers(runner)
+
+    disabled = client.patch(f"/api/runners/{runner['id']}", json={"enabled": False})
+    assert disabled.status_code == 200
+    assert disabled.json()["status"] == "disabled"
+    assert client.post(f"/api/runners/{runner['id']}/claim", headers=headers).status_code == 409
+    assert client.post(
+        "/api/runners/register",
+        json={"name": "disabled", "hostname": "h", "platform": "test", "capabilities": [], "metadata": {}, "runner_id": runner["id"], "runner_token": runner["enrollment_token"]},
+    ).status_code == 409
+
+    assert client.patch(f"/api/runners/{runner['id']}", json={"enabled": True}).status_code == 200
+    rotated = client.post(f"/api/runners/{runner['id']}/rotate-token")
+    assert rotated.status_code == 200
+    new_token = rotated.json()["enrollment_token"]
+    assert new_token != runner["enrollment_token"]
+    assert client.post(f"/api/runners/{runner['id']}/heartbeat", json={"hostname": "h", "platform": "test", "capabilities": [], "metadata": {}}, headers=headers).status_code == 401
+    new_headers = {"X-Relayvia-Runner-Token": new_token}
+    assert client.post(f"/api/runners/{runner['id']}/heartbeat", json={"hostname": "h", "platform": "test", "capabilities": [], "metadata": {}}, headers=new_headers).status_code == 200
+
+    revoked = client.post(f"/api/runners/{runner['id']}/revoke")
+    assert revoked.status_code == 200
+    assert revoked.json()["status"] == "disabled"
+    assert client.post(f"/api/runners/{runner['id']}/heartbeat", json={"hostname": "h", "platform": "test", "capabilities": [], "metadata": {}}, headers=new_headers).status_code == 401
+
+
 def test_runner_claims_capability_matched_tasks(client, memory_db):
     _, factory = memory_db
     with factory() as db:
@@ -371,10 +399,36 @@ def test_runner_artifact_result(client, memory_db, monkeypatch):
 
     runner = register_runner(client)
     claimed = client.post(f"/api/runners/{runner['id']}/claim", headers=runner_headers(runner)).json()
+    staged = client.post(
+        f"/api/runners/{runner['id']}/artifact-uploads",
+        json={
+            "task_id": claimed["task_id"],
+            "lease_token": claimed["lease_token"],
+            "name": "report.txt",
+            "type": "report",
+            "content_type": "text/plain",
+            "output_key": "report",
+        },
+        headers=runner_headers(runner),
+    )
+    assert staged.status_code == 201
+    upload = staged.json()
+    content_headers = {
+        **runner_headers(runner),
+        "X-Relayvia-Task-Id": claimed["task_id"],
+        "X-Relayvia-Lease-Token": claimed["lease_token"],
+        "Content-Type": "application/octet-stream",
+    }
+    uploaded = client.post(
+        f"/api/runners/{runner['id']}/artifact-uploads/{upload['artifact_id']}/content",
+        content=b"runner-report",
+        headers=content_headers,
+    )
+    assert uploaded.status_code == 200
     result = {
         "ok": True,
         "output": {"stdout": "done"},
-        "artifacts": [{"name": "report.txt", "type": "report", "content_type": "text/plain", "content": "cnVubmVyLXJlcG9ydA==", "output_key": "report"}],
+        "artifacts": [{"name": "report.txt", "type": "report", "uri": upload["uri"], "output_key": "report"}],
         "metadata": {"exit_code": 0},
         "error": None,
     }
@@ -385,6 +439,10 @@ def test_runner_artifact_result(client, memory_db, monkeypatch):
         assert tool_run.output_json["report"].startswith("artifact://")
         artifact_id = tool_run.output_json["report"][len("artifact://"):]
     assert storage.open(artifact_id).read() == b"runner-report"
+    with factory() as db:
+        from app.domain.runs.events import RunEvent
+        log = db.scalar(select(RunEvent).where(RunEvent.workflow_run_id == run_id, RunEvent.event_type == "node_log"))
+        assert log is not None and log.message == "done"
 
 
 def test_execute_task_units(monkeypatch, tmp_path):

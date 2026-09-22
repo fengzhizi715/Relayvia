@@ -147,6 +147,29 @@ def test_register_artifact_creates_entity_and_storage_file(memory_db, storage):
     assert storage.open(artifact_id).read() == b"report-content"
 
 
+def test_artifact_storage_is_compensated_when_database_transaction_rolls_back(memory_db, storage):
+    _, factory = memory_db
+    with factory() as db:
+        run = make_run(db, chain_graph(), {"schema_version": "2"})
+        node_run = db.scalar(select(NodeRun).where(NodeRun.workflow_run_id == run.id, NodeRun.node_id == "tool_a"))
+        artifact = register_artifact_bytes(
+            db,
+            workflow_run_id=run.id,
+            producer_node_run_id=node_run.id,
+            name="rollback.txt",
+            artifact_type="report",
+            content_type="text/plain",
+            content=b"temporary",
+            metadata={},
+            storage=storage,
+        )
+        artifact_id = artifact.id
+        assert storage.exists(artifact_id)
+        db.rollback()
+
+    assert not storage.exists(artifact_id)
+
+
 def test_register_candidates_bytes_external_and_same_run_reference(memory_db, storage):
     _, factory = memory_db
     with factory() as db:

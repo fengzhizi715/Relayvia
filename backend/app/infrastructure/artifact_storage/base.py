@@ -15,6 +15,10 @@ class ArtifactStorage(ABC):
         """Persist bytes under `key` and return the byte size."""
 
     @abstractmethod
+    def save_stream(self, key: str, stream: BinaryIO) -> int:
+        """Persist a seekable stream without requiring a JSON/base64 copy."""
+
+    @abstractmethod
     def open(self, key: str) -> BinaryIO:
         """Open stored content for streaming download.
 
@@ -25,3 +29,7 @@ class ArtifactStorage(ABC):
     @abstractmethod
     def exists(self, key: str) -> bool:
         """Whether content exists for `key` (external URIs return False)."""
+
+    @abstractmethod
+    def delete(self, key: str) -> None:
+        """Delete stored content if present. Must be idempotent."""

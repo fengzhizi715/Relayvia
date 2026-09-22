@@ -46,6 +46,17 @@ class S3ArtifactStorage(ArtifactStorage):
         self.client.put_object(Bucket=self.bucket, Key=self._key(key), Body=content)
         return len(content)
 
+    def save_stream(self, key: str, stream: BinaryIO) -> int:
+        start = stream.tell()
+        stream.seek(0, 2)
+        size = stream.tell() - start
+        stream.seek(start)
+        if hasattr(self.client, "upload_fileobj"):
+            self.client.upload_fileobj(stream, self.bucket, self._key(key))
+        else:  # lightweight compatible clients used in tests
+            self.client.put_object(Bucket=self.bucket, Key=self._key(key), Body=stream.read())
+        return size
+
     def open(self, key: str) -> BinaryIO:
         try:
             return self.client.get_object(Bucket=self.bucket, Key=self._key(key))["Body"]
@@ -62,3 +73,6 @@ class S3ArtifactStorage(ArtifactStorage):
             if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
                 return False
             raise
+
+    def delete(self, key: str) -> None:
+        self.client.delete_object(Bucket=self.bucket, Key=self._key(key))

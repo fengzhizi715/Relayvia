@@ -209,6 +209,18 @@ def test_derive_workflow_state(db_session):
     assert derive_workflow_state(None, node_runs) is WorkflowRunStatus.FAILED
 
 
+def test_derive_workflow_state_keeps_parallel_inflight_branch_running(db_session):
+    run = make_run(db_session, linear_graph("agent-1"))
+    node_runs = db_session.scalars(select(NodeRun).where(NodeRun.workflow_run_id == run.id)).all()
+    node_runs[0].status = NodeRunStatus.WAITING.value
+    node_runs[1].status = NodeRunStatus.QUEUED.value
+
+    assert derive_workflow_state(None, node_runs) is WorkflowRunStatus.RUNNING
+
+    node_runs[1].status = NodeRunStatus.PENDING.value
+    assert derive_workflow_state(None, node_runs) is WorkflowRunStatus.WAITING
+
+
 def test_cancel_run_tasks(db_session):
     run = make_run(db_session, linear_graph("agent-1"))
     scheduler = WorkflowScheduler()

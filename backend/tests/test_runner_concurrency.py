@@ -29,6 +29,12 @@ class FakeRunnerClient:
     async def task_heartbeat(self, _task_id: str, _lease_token: str) -> bool:
         return False
 
+    async def claim_workspace_cleanup(self):
+        return None
+
+    async def complete_workspace_cleanup(self, _workspace_id: str, *, ok: bool, error: str | None = None) -> None:
+        return None
+
     async def submit(self, task_id: str, _lease_token: str, _result: dict) -> bool:
         self.submitted.append(task_id)
         return True

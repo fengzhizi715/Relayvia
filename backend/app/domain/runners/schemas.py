@@ -36,6 +36,15 @@ class RunnerRead(BaseModel):
     updated_at: datetime
 
 
+class RunnerStatusUpdate(BaseModel):
+    enabled: bool
+
+
+class RunnerTokenRead(BaseModel):
+    runner_id: str
+    enrollment_token: str
+
+
 class RunnerRegistrationRead(RunnerRead):
     """Enrollment response. `enrollment_token` is returned only once."""
 
@@ -76,3 +85,16 @@ class RunnerSubmitRequest(BaseModel):
     task_id: str
     lease_token: str
     result: RunnerResult
+
+
+class RunnerWorkspaceCleanupClaim(BaseModel):
+    workspace_id: str
+    repository: str
+    path: str
+    branch: str | None
+    strategy: str
+
+
+class RunnerWorkspaceCleanupResult(BaseModel):
+    ok: bool
+    error: str | None = Field(default=None, max_length=1000)

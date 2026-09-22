@@ -27,6 +27,7 @@ from app.domain.artifacts.service import register_artifact_candidates
 from app.domain.workspaces.models import Workspace, WorkspaceStatus
 from app.infrastructure.artifact_storage.base import ArtifactStorage
 from app.infrastructure.database.base import utc_now
+from app.infrastructure.database.retry import retry_mysql_transaction
 from app.runtime.scheduler.workflow_scheduler import WorkflowScheduler
 from app.runtime.state_machine import NodeRunStatus, WorkflowRunStatus, transition_node_run
 from app.runtime.executor.trace import sanitize_artifacts, sanitize_error, sanitize_metadata, sanitize_output
@@ -94,6 +95,8 @@ def register_runner(
     enrollment_token: str | None = None
     if runner_id:
         runner = authenticate_runner(db, runner_id, runner_token)
+        if runner.status == RunnerStatus.DISABLED.value:
+            raise RelayviaError("RUNNER_DISABLED", "Runner is disabled", status_code=409)
     else:
         enrollment_token = secrets.token_urlsafe(32)
         runner = Runner(
@@ -116,6 +119,45 @@ def register_runner(
     db.commit()
     db.refresh(runner)
     return runner, enrollment_token
+
+
+def set_runner_enabled(db: Session, runner_id: str, *, enabled: bool) -> Runner:
+    runner = db.scalar(select(Runner).where(Runner.id == runner_id).with_for_update())
+    if runner is None:
+        raise RelayviaError("RUNNER_NOT_FOUND", "Runner not found", status_code=404)
+    runner.status = RunnerStatus.OFFLINE.value if enabled else RunnerStatus.DISABLED.value
+    metadata = dict(runner.metadata_json or {})
+    metadata["enabled_changed_at"] = utc_now().isoformat()
+    runner.metadata_json = metadata
+    db.commit()
+    db.refresh(runner)
+    return runner
+
+
+def rotate_runner_token(db: Session, runner_id: str) -> tuple[Runner, str]:
+    runner = db.scalar(select(Runner).where(Runner.id == runner_id).with_for_update())
+    if runner is None:
+        raise RelayviaError("RUNNER_NOT_FOUND", "Runner not found", status_code=404)
+    token = secrets.token_urlsafe(32)
+    runner.auth_token_hash = _token_hash(token)
+    runner.metadata_json = {**(runner.metadata_json or {}), "token_rotated_at": utc_now().isoformat()}
+    db.commit()
+    db.refresh(runner)
+    return runner, token
+
+
+def revoke_runner(db: Session, runner_id: str) -> Runner:
+    runner = db.scalar(select(Runner).where(Runner.id == runner_id).with_for_update())
+    if runner is None:
+        raise RelayviaError("RUNNER_NOT_FOUND", "Runner not found", status_code=404)
+    # Replace the hash with a token that is never returned, invalidating every
+    # previously issued credential immediately.
+    runner.auth_token_hash = _token_hash(secrets.token_urlsafe(48))
+    runner.status = RunnerStatus.DISABLED.value
+    runner.metadata_json = {**(runner.metadata_json or {}), "revoked_at": utc_now().isoformat()}
+    db.commit()
+    db.refresh(runner)
+    return runner
 
 
 def heartbeat_runner(db: Session, runner_id: str, *, hostname: str, platform: str | None, capabilities: list[str], metadata: dict, lease_seconds: int) -> Runner:
@@ -145,10 +187,11 @@ def heartbeat_runner(db: Session, runner_id: str, *, hostname: str, platform: st
     return runner
 
 
+@retry_mysql_transaction()
 def runner_claim(db: Session, runner: Runner, *, lease_seconds: int) -> ExecutionTask | None:
     capabilities = set(runner.capabilities_json)
     now = utc_now()
-    task = db.scalar(
+    candidate = db.execute(
         select(ExecutionTask)
         .join(WorkflowRun, WorkflowRun.id == ExecutionTask.workflow_run_id)
         .where(
@@ -159,18 +202,19 @@ def runner_claim(db: Session, runner: Runner, *, lease_seconds: int) -> Executio
             or_(ExecutionTask.runner_id.is_(None), ExecutionTask.runner_id == runner.id),
         )
         .order_by(ExecutionTask.priority.desc(), ExecutionTask.available_at.asc(), ExecutionTask.created_at.asc())
+        .with_only_columns(ExecutionTask.id, ExecutionTask.workflow_run_id)
         .limit(1)
-        .with_for_update(skip_locked=True)
-    )
-    if task is None:
+    ).first()
+    if candidate is None:
         return None
 
-    # `SELECT ... JOIN` above filters RUNNING runs, but a pause/cancel may
-    # race between selection and the task state update. Lock and re-check the
-    # parent Run before the Runner's claim becomes an auto-start.
-    run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == task.workflow_run_id).with_for_update())
+    # Canonical lock order shared with Scheduler and Worker:
+    # WorkflowRun -> ExecutionTask -> NodeRun.
+    run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == candidate.workflow_run_id).with_for_update())
     if run is None or WorkflowRunStatus(run.status) is not WorkflowRunStatus.RUNNING:
-        db.rollback()
+        return None
+    task = db.scalar(select(ExecutionTask).where(ExecutionTask.id == candidate.id).with_for_update(skip_locked=True))
+    if task is None or task.status != ExecutionTaskStatus.PENDING.value:
         return None
 
     lease_token = str(uuid4())
@@ -223,6 +267,7 @@ def runner_claim(db: Session, runner: Runner, *, lease_seconds: int) -> Executio
     return task
 
 
+@retry_mysql_transaction()
 def runner_task_heartbeat(
     db: Session,
     *,
@@ -239,6 +284,11 @@ def runner_task_heartbeat(
     paused Run intentionally does not set the signal; pause is cooperative and
     lets an already-started external call finish.
     """
+    candidate = db.get(ExecutionTask, task_id)
+    if candidate is None:
+        raise RelayviaError("RUNNER_TASK_STALE", "Runner task is no longer owned by this Runner", status_code=409)
+
+    run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == candidate.workflow_run_id).with_for_update())
     task = db.scalar(select(ExecutionTask).where(ExecutionTask.id == task_id).with_for_update())
     if task is None or task.locked_by != runner.id or task.lease_token != lease_token:
         raise RelayviaError("RUNNER_TASK_STALE", "Runner task is no longer owned by this Runner", status_code=409)
@@ -248,7 +298,6 @@ def runner_task_heartbeat(
         db.commit()
         return True
 
-    run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == task.workflow_run_id).with_for_update())
     if run is None or WorkflowRunStatus(run.status) in {
         WorkflowRunStatus.FAILED,
         WorkflowRunStatus.CANCELLED,
@@ -324,6 +373,27 @@ def runner_submit(
         )
 
     output = {**sanitize_output(result.get("output") or {}), **output_map}
+    metadata = sanitize_metadata(result.get("metadata") or {})
+    stdout = output.get("stdout")
+    stderr = metadata.get("stderr")
+    if isinstance(stdout, str) and stdout:
+        record_event(
+            db,
+            workflow_run_id=task.workflow_run_id,
+            node_run_id=task.node_run_id,
+            event_type=RunEventType.NODE_LOG,
+            message=stdout,
+            payload={"stream": "stdout", "runner_id": runner_id},
+        )
+    if isinstance(stderr, str) and stderr:
+        record_event(
+            db,
+            workflow_run_id=task.workflow_run_id,
+            node_run_id=task.node_run_id,
+            event_type=RunEventType.NODE_LOG,
+            message=stderr,
+            payload={"stream": "stderr", "runner_id": runner_id},
+        )
     if result.get("ok"):
         transition_execution_task(ExecutionTaskStatus(task.status), ExecutionTaskStatus.COMPLETED)
         task.status = ExecutionTaskStatus.COMPLETED.value
@@ -334,7 +404,7 @@ def runner_submit(
             transition_node_run(NodeRunStatus(node_run.status), NodeRunStatus.COMPLETED)
             node_run.status = NodeRunStatus.COMPLETED.value
             node_run.output_json = output
-            node_run.execution_metadata_json = sanitize_metadata(result.get("metadata") or {})
+            node_run.execution_metadata_json = metadata
             node_run.artifact_refs_json = references
             node_run.finished_at = utc_now()
         record_event(
@@ -377,7 +447,7 @@ def runner_submit(
             transition_node_run(NodeRunStatus(node_run.status), NodeRunStatus.FAILED)
             node_run.status = NodeRunStatus.FAILED.value
             node_run.error_json = error
-            node_run.execution_metadata_json = sanitize_metadata(result.get("metadata") or {})
+            node_run.execution_metadata_json = metadata
             node_run.artifact_refs_json = sanitize_artifacts(references)
             node_run.finished_at = utc_now()
         record_event(
@@ -417,4 +487,14 @@ def _sync_workspace_result(db: Session, task: ExecutionTask, result: dict) -> No
         workspace.path = str(metadata["workspace_path"])
     if metadata.get("workspace_branch"):
         workspace.branch = str(metadata["workspace_branch"])
-    workspace.status = (WorkspaceStatus.RELEASED if result.get("ok") else WorkspaceStatus.FAILED).value
+    if not workspace.path:
+        workspace.status = WorkspaceStatus.FAILED.value
+    elif not result.get("ok"):
+        # Preserve failed worktrees for debugging. The operator can request
+        # Release later, which enters the same Runner cleanup protocol.
+        workspace.status = WorkspaceStatus.FAILED.value
+    elif workspace.workspace_type in {"local", "local_repository"}:
+        workspace.status = WorkspaceStatus.RELEASED.value
+    else:
+        workspace.status = WorkspaceStatus.RELEASING.value
+        workspace.metadata_json = {**(workspace.metadata_json or {}), "cleanup_requested_at": utc_now().isoformat()}

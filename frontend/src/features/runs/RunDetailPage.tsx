@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   ApiError,
@@ -58,9 +58,16 @@ function ExecutionTasksSection({ runId }: { runId: string }) {
 }
 
 function RunTimeline({ runId }: { runId: string }) {
-  const events = useQuery({ queryKey: ["run-events", runId], queryFn: () => getRunEvents(runId) });
+  const pageSize = 200;
+  const events = useInfiniteQuery({
+    queryKey: ["run-events", runId],
+    queryFn: ({ pageParam }) => getRunEvents(runId, pageParam, pageSize),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.length === pageSize ? lastPage[lastPage.length - 1]?.id : undefined,
+    refetchInterval: 4000,
+  });
   if (events.isLoading) return <div className="loading-state">Loading events...</div>;
-  const list = events.data ?? [];
+  const list = events.data?.pages.flat() ?? [];
   return (
     <div className="actions-section">
       <div className="section-heading">
@@ -81,6 +88,7 @@ function RunTimeline({ runId }: { runId: string }) {
           ))}
         </div>
       )}
+      {events.hasNextPage ? <button className="button button--secondary" disabled={events.isFetchingNextPage} onClick={() => void events.fetchNextPage()} type="button">{events.isFetchingNextPage ? "Loading..." : "Load more events"}</button> : null}
     </div>
   );
 }
@@ -99,6 +107,8 @@ export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
   // Fetch-backed SSE preserves VITE_API_BASE_URL and Authorization. Durable
   // event-list polling fills any gap after the connection is re-established.
   useEffect(() => {
+    const status = runQuery.data?.status;
+    if (status === "completed" || status === "failed" || status === "cancelled") return;
     const controller = new AbortController();
     const refreshFromEvent = () => {
       void queryClient.invalidateQueries({ queryKey: ["workflow-run", runId] });
@@ -110,7 +120,7 @@ export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
     return () => {
       controller.abort();
     };
-  }, [runId, queryClient]);
+  }, [runId, queryClient, runQuery.data?.status]);
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["workflow-run", runId] });

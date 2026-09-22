@@ -73,9 +73,13 @@ def is_runner_data_plane_request(request: Request) -> bool:
     parts = path.split("/")
     if request.method != "POST" or parts[:3] != ["", "api", "runners"]:
         return False
-    if len(parts) == 5 and parts[4] in {"heartbeat", "claim", "submit-result"}:
+    if len(parts) == 5 and parts[4] in {"heartbeat", "claim", "submit-result", "artifact-uploads"}:
         return True
-    return len(parts) == 7 and parts[4] == "tasks" and parts[6] == "heartbeat"
+    if len(parts) == 7 and parts[4] == "tasks" and parts[6] == "heartbeat":
+        return True
+    if len(parts) == 7 and parts[4] == "artifact-uploads" and parts[6] == "content":
+        return True
+    return len(parts) in {6, 7} and parts[4] == "workspace-cleanups"
 
 
 def _error(status_code: int, code: str, message: str) -> JSONResponse:

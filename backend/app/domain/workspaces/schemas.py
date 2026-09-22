@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.domain.workspaces.models import WorkspaceStatus
+from app.domain.workspaces.models import WorkspaceStatus, WorkspaceType
 
 
 class WorkspaceRead(BaseModel):
@@ -19,11 +19,7 @@ class WorkspaceRead(BaseModel):
     path: str | None
     branch: str | None
     base_branch: str | None
-    # Older persisted records may use the explicit names
-    # ``local_repository`` / ``git_worktree`` while the runtime currently
-    # writes ``local`` / ``worktree``. Keep the read contract compatible until
-    # a dedicated storage migration normalizes historical values.
-    workspace_type: str
+    workspace_type: WorkspaceType
     status: WorkspaceStatus
     workflow_run_id: str
     node_run_id: str

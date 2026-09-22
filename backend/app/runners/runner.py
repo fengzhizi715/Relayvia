@@ -139,10 +139,70 @@ class RunnerClient:
             params={"lease_token": lease_token},
             headers=self._headers(),
         )
-        if response.status_code == 409:
+        if response.status_code in {401, 409}:
             return True
         response.raise_for_status()
         return bool(response.json().get("cancel_requested"))
+
+    async def claim_workspace_cleanup(self) -> dict | None:
+        response = await self.client.post(f"/api/runners/{self.id}/workspace-cleanups/claim", headers=self._headers())
+        if response.status_code == 409:
+            return None
+        response.raise_for_status()
+        return response.json()
+
+    async def complete_workspace_cleanup(self, workspace_id: str, *, ok: bool, error: str | None = None) -> None:
+        response = await self.client.post(
+            f"/api/runners/{self.id}/workspace-cleanups/{workspace_id}/complete",
+            json={"ok": ok, "error": error},
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+
+    async def upload_artifact(self, task: dict, candidate: dict) -> dict:
+        raw = candidate.get("content")
+        if isinstance(raw, bytes):
+            content = raw
+        elif isinstance(raw, str):
+            try:
+                content = base64.b64decode(raw, validate=True)
+            except (ValueError, TypeError) as exc:
+                raise WorkspaceError("artifact content is not valid base64") from exc
+        else:
+            return candidate
+        staged = await self.client.post(
+            f"/api/runners/{self.id}/artifact-uploads",
+            json={
+                "task_id": task["task_id"],
+                "lease_token": task["lease_token"],
+                "name": candidate.get("name") or "artifact",
+                "type": candidate.get("type") or "file",
+                "content_type": candidate.get("content_type"),
+                "metadata": candidate.get("metadata") or {},
+                "output_key": candidate.get("output_key"),
+            },
+            headers=self._headers(),
+        )
+        staged.raise_for_status()
+        upload = staged.json()
+        headers = {
+            **self._headers(),
+            "X-Relayvia-Task-Id": task["task_id"],
+            "X-Relayvia-Lease-Token": task["lease_token"],
+            "Content-Type": "application/octet-stream",
+        }
+        response = await self.client.post(
+            f"/api/runners/{self.id}/artifact-uploads/{upload['artifact_id']}/content",
+            content=content,
+            headers=headers,
+        )
+        response.raise_for_status()
+        return {
+            "name": candidate.get("name") or "artifact",
+            "type": candidate.get("type") or "file",
+            "uri": upload["uri"],
+            "output_key": candidate.get("output_key"),
+        }
 
     async def close(self) -> None:
         await self.client.aclose()
@@ -223,6 +283,24 @@ async def prepare_workspace(workspace: dict, root: Path) -> tuple[str, str, bool
     return str(path), branch, True
 
 
+async def cleanup_workspace(workspace: dict, root: Path) -> None:
+    """Remove only a Runner-managed Git worktree; never delete a repository."""
+    if workspace.get("strategy") in {"local", "local_repository"}:
+        return
+    repository = Path(str(workspace.get("repository"))).resolve()
+    path = Path(str(workspace.get("path"))).resolve()
+    managed_root = (root / "worktrees").resolve()
+    if not repository.is_relative_to(root) or not path.is_relative_to(managed_root) or path == managed_root:
+        raise WorkspaceError("workspace cleanup target escapes the Runner-managed worktree root")
+    if not await _git_ok(repository):
+        raise WorkspaceError("repository is not a valid Git repository")
+    if path.exists():
+        removed = await _run_git(["git", "-C", str(repository), "worktree", "remove", "--force", str(path)])
+        if removed != 0:
+            raise WorkspaceError("failed to remove Git worktree")
+    await _run_git(["git", "-C", str(repository), "worktree", "prune"])
+
+
 async def _git_diff(repository: Path) -> bytes:
     # Mark untracked files as intent-to-add so they appear in the diff patch.
     await _run_git(["git", "-C", str(repository), "add", "-N", "."])
@@ -267,9 +345,9 @@ async def execute_task(task: dict, *, cancel_event: asyncio.Event | None = None)
             cwd_path = Path(cwd).resolve()
             root_path = Path(root).resolve()
         except (OSError, ValueError):
-            return {"ok": False, "error": {"code": "INVALID_WORKING_DIRECTORY", "message": "Working directory is invalid", "retryable": False, "details": {}}}
+            return {"ok": False, "error": {"code": "INVALID_WORKING_DIRECTORY", "message": "Working directory is invalid", "retryable": False, "details": {}}, "metadata": workspace_meta}
         if not cwd_path.is_relative_to(root_path):
-            return {"ok": False, "error": {"code": "INVALID_WORKING_DIRECTORY", "message": "Working directory escapes the Runner root", "retryable": False, "details": {"cwd": cwd}}}
+            return {"ok": False, "error": {"code": "INVALID_WORKING_DIRECTORY", "message": "Working directory escapes the Runner root", "retryable": False, "details": {"cwd": cwd}}, "metadata": workspace_meta}
 
     cwd_path = Path(cwd).resolve()
     argv = _command_argv(command, root=root, cwd=cwd_path)
@@ -282,6 +360,7 @@ async def execute_task(task: dict, *, cancel_event: asyncio.Event | None = None)
                 "retryable": False,
                 "details": {},
             },
+            "metadata": workspace_meta,
         }
 
     try:
@@ -293,7 +372,7 @@ async def execute_task(task: dict, *, cancel_event: asyncio.Event | None = None)
             start_new_session=True,
         )
     except OSError as exc:
-        return {"ok": False, "error": {"code": "RUNNER_SPAWN_FAILED", "message": str(exc), "retryable": False, "details": {}}}
+        return {"ok": False, "error": {"code": "RUNNER_SPAWN_FAILED", "message": str(exc), "retryable": False, "details": {}}, "metadata": workspace_meta}
 
     communicate = asyncio.create_task(process.communicate())
     cancellation_wait = asyncio.create_task(cancel_event.wait()) if cancel_event is not None else None
@@ -315,7 +394,7 @@ async def execute_task(task: dict, *, cancel_event: asyncio.Event | None = None)
     else:
         _terminate_process_group(process)
         await communicate
-        return {"ok": False, "error": {"code": "RUNNER_TIMEOUT", "message": f"Command timed out after {timeout_seconds}s", "retryable": False, "details": {}}}
+        return {"ok": False, "error": {"code": "RUNNER_TIMEOUT", "message": f"Command timed out after {timeout_seconds}s", "retryable": False, "details": {}}, "metadata": workspace_meta}
     for waiter in pending:
         waiter.cancel()
 
@@ -331,6 +410,9 @@ async def execute_task(task: dict, *, cancel_event: asyncio.Event | None = None)
                 "name": "patch.diff",
                 "type": "patch",
                 "content_type": "text/plain",
+                # Internal hand-off to RunnerClient.upload_artifact. The
+                # encoded value is uploaded through the binary endpoint and
+                # is never included in submit-result JSON.
                 "content": base64.b64encode(patch).decode(),
                 "output_key": "patch",
             })
@@ -401,6 +483,19 @@ async def run_runner(*, client: RunnerClient | None = None, stop_event: asyncio.
                 await client.heartbeat()
             except httpx.HTTPError:
                 pass
+            try:
+                cleanup = await client.claim_workspace_cleanup()
+                if cleanup is not None:
+                    try:
+                        root = _runner_root()
+                        if root is None:
+                            raise WorkspaceError("RELAYVIA_RUNNER_ROOT must be configured")
+                        await cleanup_workspace(cleanup, root)
+                        await client.complete_workspace_cleanup(cleanup["workspace_id"], ok=True)
+                    except (WorkspaceError, OSError) as exc:
+                        await client.complete_workspace_cleanup(cleanup["workspace_id"], ok=False, error=str(exc))
+            except httpx.HTTPError:
+                pass
             while len(active) < concurrency and not stop.is_set():
                 task = await client.claim()
                 if task is None:
@@ -427,6 +522,22 @@ async def _run_claimed_task(client: RunnerClient, task: dict, renew_interval: fl
     monitor = asyncio.create_task(_monitor_task(client, task, cancel_event, renew_interval))
     try:
         result = await execute_task(task, cancel_event=cancel_event)
+        if (result.get("error") or {}).get("code") == "RUNNER_CANCELLED" and task.get("workspace"):
+            workspace = task["workspace"]
+            path = (result.get("metadata") or {}).get("workspace_path")
+            if path and workspace.get("id"):
+                try:
+                    root = _runner_root()
+                    if root is None:
+                        raise WorkspaceError("RELAYVIA_RUNNER_ROOT must be configured")
+                    await cleanup_workspace({**workspace, "path": path}, root)
+                    await client.complete_workspace_cleanup(workspace["id"], ok=True)
+                except (WorkspaceError, OSError) as exc:
+                    await client.complete_workspace_cleanup(workspace["id"], ok=False, error=str(exc))
+        uploaded: list[dict] = []
+        for candidate in result.get("artifacts") or []:
+            uploaded.append(await client.upload_artifact(task, candidate))
+        result["artifacts"] = uploaded
     finally:
         monitor.cancel()
         await asyncio.gather(monitor, return_exceptions=True)

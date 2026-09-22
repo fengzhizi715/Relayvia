@@ -26,6 +26,7 @@ from app.domain.workflows.graph import NodeType, WorkflowGraph, parse_workflow_g
 from app.domain.workflows.model import Workflow, WorkflowVersion
 from app.domain.workflows.validation_service import referenced_registry_ids
 from app.infrastructure.database.base import utc_now
+from app.infrastructure.database.retry import retry_mysql_transaction
 from app.core.config import get_settings
 from app.runtime.context import RuntimeContext
 from app.runtime.readiness.validator import check_run_readiness
@@ -444,6 +445,7 @@ def resume_run(db: Session, run_id: str) -> WorkflowRunRead:
     return _to_read(db, run)
 
 
+@retry_mysql_transaction()
 def cancel_run(db: Session, run_id: str) -> WorkflowRunRead:
     run = _get_locked(db, run_id)
     current = WorkflowRunStatus(run.status)
@@ -499,12 +501,15 @@ def runtime_context_for_run(db: Session, run: WorkflowRun) -> RuntimeContext:
 
 
 def _lock_node_run(db: Session, node_run_id: str) -> tuple[NodeRun, WorkflowRun]:
-    node_run = db.scalar(select(NodeRun).where(NodeRun.id == node_run_id).with_for_update())
-    if node_run is None:
+    candidate = db.get(NodeRun, node_run_id)
+    if candidate is None:
         raise RelayviaError("NODE_RUN_NOT_FOUND", "Node Run not found", status_code=404)
-    run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == node_run.workflow_run_id).with_for_update())
+    run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == candidate.workflow_run_id).with_for_update())
     if run is None:  # pragma: no cover - FK invariant
         raise RelayviaError("WORKFLOW_RUN_NOT_FOUND", "Workflow Run not found", status_code=404)
+    node_run = db.scalar(select(NodeRun).where(NodeRun.id == node_run_id).with_for_update())
+    if node_run is None:  # pragma: no cover - protected by parent lock + FK
+        raise RelayviaError("NODE_RUN_NOT_FOUND", "Node Run not found", status_code=404)
     return node_run, run
 
 
@@ -519,10 +524,11 @@ def _require_waiting(node_run: NodeRun) -> None:
 
 
 def _waiting_node(run: WorkflowRun, node_run: NodeRun, *, subtype: str, reason: str):
-    if WorkflowRunStatus(run.status) is not WorkflowRunStatus.WAITING:
+    run_status = WorkflowRunStatus(run.status)
+    if run_status not in {WorkflowRunStatus.RUNNING, WorkflowRunStatus.WAITING}:
         raise RelayviaError(
-            "WORKFLOW_RUN_NOT_WAITING",
-            "Workflow Run must be waiting before this action can be applied",
+            "WORKFLOW_RUN_NOT_ACTIONABLE",
+            "Workflow Run must be running or waiting before this action can be applied",
             status_code=409,
             details={"status": run.status},
         )

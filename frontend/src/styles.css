@@ -74,6 +74,7 @@ nav { display: grid; gap: 5px; }
 .detail-grid strong { overflow: hidden; color: #dbe5f5; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .truncate { display: block; }
 .detail-warning, .inline-error { border: 1px solid rgba(246, 117, 117, .25); border-radius: 9px; background: rgba(246, 117, 117, .08); color: #ffaaaa; font-size: 12px; line-height: 1.5; padding: 10px 12px; }
+.inline-success { border: 1px solid rgba(94, 211, 157, .25); border-radius: 9px; background: rgba(94, 211, 157, .08); color: #9af0c8; font-size: 12px; line-height: 1.5; padding: 10px 12px; overflow-wrap: anywhere; }
 .detail-warning { margin-top: 14px; }
 .contract-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
 .contract-grid > div { min-width: 0; }

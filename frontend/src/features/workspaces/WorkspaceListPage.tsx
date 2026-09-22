@@ -5,13 +5,13 @@ import { StatusBadge } from "../../components/StatusBadge";
 
 function statusTone(status: Workspace["status"]): "success" | "warning" | "danger" | "neutral" {
   if (status === "ready") return "success";
-  if (status === "failed") return "danger";
-  if (status === "creating" || status === "in_use") return "warning";
+  if (status === "failed" || status === "cleanup_failed") return "danger";
+  if (status === "creating" || status === "in_use" || status === "releasing" || status === "cleaning") return "warning";
   return "neutral";
 }
 
 function workspaceType(type: Workspace["workspace_type"]): string {
-  return type === "worktree" || type === "git_worktree" ? "Git worktree" : "Local repository";
+  return type === "worktree" ? "Git worktree" : "Local repository";
 }
 
 export function WorkspaceListPage() {
@@ -40,7 +40,7 @@ export function WorkspaceListPage() {
       ) : (
         <div className="resource-list">
           {list.map((workspace) => {
-            const canRelease = workspace.status === "ready" || workspace.status === "failed";
+            const canRelease = workspace.status === "ready" || workspace.status === "failed" || workspace.status === "cleanup_failed";
             return (
               <div className="resource-row" key={workspace.id}>
                 <span className="resource-row-main">
@@ -60,7 +60,7 @@ export function WorkspaceListPage() {
                       className="button button--danger"
                       disabled={release.isPending}
                       onClick={() => {
-                        if (window.confirm(`Release workspace “${workspace.name}”? Its Runner files are not deleted by this action.`)) release.mutate(workspace.id);
+                        if (window.confirm(`Release workspace “${workspace.name}”? Its Runner will remove the managed worktree; the Git branch is preserved.`)) release.mutate(workspace.id);
                       }}
                       type="button"
                     >

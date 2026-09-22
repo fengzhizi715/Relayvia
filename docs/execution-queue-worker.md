@@ -68,15 +68,19 @@ Workflow Runtime / Worker 只依赖该接口，不接触 MySQL 细节。V1 提�
 
 ## Claim Algorithm（MySQL 8）
 
-```sql
-SELECT ... FROM execution_tasks
-WHERE status = 'pending' AND available_at <= NOW()
-ORDER BY priority DESC, available_at ASC, created_at ASC
-LIMIT 1
-FOR UPDATE SKIP LOCKED;
+```text
+candidate lookup（不加锁）
+  → SELECT WorkflowRun ... FOR UPDATE
+  → SELECT ExecutionTask ... FOR UPDATE SKIP LOCKED
+  → 条件 UPDATE status='pending'
+  → COMMIT
 ```
 
-- 短事务：`SELECT + 条件 UPDATE(status='pending' 守卫) + COMMIT`。
+- 全部竞争路径统一使用 `WorkflowRun → ExecutionTask → NodeRun` 锁顺序，避免
+  cancel/reconcile 与 claim/start 的锁顺序反转。
+- 短事务：选候选、锁父 Run、锁 Task、条件更新、提交；长任务不持有事务。
+- InnoDB `1213` deadlock / `1205` lock timeout 在 Queue 事务边界最多重试 3 次并退避；
+  其他数据库错误原样抛出。
 - 条件 UPDATE 用 `WHERE status = 'pending'` 且校验 `rowcount == 1`，保证即使在不支持
   行锁的方言（如测试用 SQLite）下"一个 Task 只有一个 Owner"。
 - 之后 Worker 才真正处理任务；长任务执行期间**不持有任何 DB 事务**。
@@ -146,7 +150,7 @@ Worker 启动与每 `WORKER_RECOVERY_INTERVAL` 执行：
 ```python
 run_execution_recovery(
     recover_expired(), promote_due_retries(),
-    reconcile active (RUNNING/PAUSED) runs,
+    reconcile active (RUNNING/PAUSED/WAITING) runs,
 )
 ```
 
@@ -272,7 +276,9 @@ WAITING**，然后**完成并释放 ExecutionTask**——Worker 不因等待而�
 
 - `NodeRun.waiting_reason`：`HUMAN_APPROVAL` / `HUMAN_INPUT` / `WAIT_TIMER`；
   `waiting_metadata_json`：Wait 记录 `resume_at`（`now + duration`）。
-- 任一 NodeRun 处于 WAITING → `WorkflowRun → WAITING`（`derive_workflow_state`）。
+- Workflow 可以在一个并行分支 `WAITING` 时保持 `RUNNING`，让其他 QUEUED / RUNNING /
+  RETRYING 或 Ready 分支继续执行。只有剩余非终态工作都被等待节点阻塞时，父 Run 才进入
+  `WAITING`。人工操作可作用于 RUNNING 或 WAITING Run 内的 WAITING Human Node。
 - **恢复驱动**：
   - `POST /api/node-runs/{id}/approve` / `/reject`：`WAITING → COMPLETED`（approve，
     output `{"approved": true}`）或 `WAITING → FAILED`（reject，error `REJECTED`，
@@ -302,8 +308,9 @@ WAITING**，然后**完成并释放 ExecutionTask**——Worker 不因等待而�
 - **产生**：`ExecutionResult.artifacts` 是 Artifact Candidate——
   `{name, type, content_type, content | uri, output_key, metadata}`。
   Server Worker 只接收受大小限制的内存 `content` 或 HTTP(S) 外部 URI，**绝不读取
-  Connector 提供的 `local_path`**；本地工作区文件必须由未来 Relayvia Runner 通过受控
-  上传契约提交。Worker 在 success 时注册 Artifact → `artifact://<id>`；
+  Connector 提供的 `local_path`**；本地工作区 Artifact 由 Runner 先创建 staging metadata，
+  再通过独立二进制流接口上传，完成后才成为 ready `artifact://<id>` 引用。Artifact 不再
+  塞入 `submit-result` JSON；失败上传会标记 failed 并删除已写内容。Worker 在 success 时注册 Artifact；
   按 `output_key` 写入 NodeRun.output（下游可 `{{nodes.X.output.<key>}}` 引用），
   引用列表存 `node_runs.artifact_refs_json`。Connector 不直接操作 Artifact 状态。
 - **外部 URI**（如 HTTP 返回 `artifact_url`）：注册为 external Artifact（无本地文件，
@@ -312,7 +319,8 @@ WAITING**，然后**完成并释放 ExecutionTask**——Worker 不因等待而�
   通过 Artifact Service 获取 metadata / open 内容。
 - **API**：`GET /api/artifacts/{id}`（metadata）、`GET /api/artifacts/{id}/content`
   （下载；external 或无文件 → 404）。
-- **Durability**：Artifact metadata + 文件都持久化；Worker 重启后仍可访问。
+- **Durability / Atomicity**：Artifact metadata + 文件都持久化；Worker 重启后仍可访问。
+  Worker 事务回滚会补偿删除已写对象，Runner 上传使用 staging → ready/failure 生命周期。
 
 ## Run Trace & SSE
 
@@ -320,7 +328,7 @@ Workflow 执行过程以结构化 `RunEvent` 持久化（`run_events` 表，自�
 与状态修改同事务写入。普通应用日志是开发/运维用途，RunEvent 才是执行 Trace。
 
 - **事件类型**：`WORKFLOW_STARTED/WAITING/RESUMED/COMPLETED/FAILED/CANCELLED`、
-  `NODE_QUEUED/STARTED/RETRYING/WAITING/RESUMED/COMPLETED/FAILED/SKIPPED/CANCELLED`、
+  `NODE_QUEUED/STARTED/LOG/RETRYING/WAITING/RESUMED/COMPLETED/FAILED/SKIPPED/CANCELLED`、
   `CONDITION_EVALUATED`（经 `NODE_COMPLETED.payload.selected_branch` 表达）。
 - **写入点**：backend（start/complete/fail/retry/wait/cancel）、scheduler（queued/skipped/
   workflow 状态）、service（start/approve/reject/submit/cancel）——全部与状态变更同一事务。
@@ -332,7 +340,8 @@ Workflow 执行过程以结构化 `RunEvent` 持久化（`run_events` 表，自�
 - **安全**：事件 payload 由 Runtime 构造（不含 NodeRun output 正文），Credential /
   Secret 不进入 Trace / SSE（复用统一脱敏边界）。
 - **前端**：Run Detail 以 fetch 流消费 SSE，因此会携带 Control Plane Authorization 并使用
-  `VITE_API_BASE_URL`；不会将访问令牌置于 SSE URL 中。
+  `VITE_API_BASE_URL`；不会将访问令牌置于 SSE URL 中。断线后使用最后事件 id 指数退避
+  重连，事件列表使用 `after_id` 分页并保留 4 秒轮询兜底。
 
 ## Relayvia Runner
 
@@ -347,6 +356,9 @@ Tool 节点（shell / git / test_command）不再由 Server Worker 或 FastAPI �
   `X-Relayvia-Runner-Token`。数据库仅保存 token 的 SHA-256 hash。心跳更新
   `last_seen_at` 并续约该 Runner 名下 RUNNING 任务的 Lease。OFFLINE 由
   `last_seen_at` 超过 `RELAYVIA_RUNNER_OFFLINE_SECONDS`（默认 60s）判定。
+- **管理与撤销**：Control Plane 可 Enable/Disable Runner、立即 Revoke 旧 token，或 Rotate
+  token（新值只返回一次）。Disable 停止领取新任务但允许 in-flight 完成；Revoke/Rotate
+  使旧 Runner 收到 401 并终止本地任务，迟到结果继续受 lease fencing 保护。
 - **拉取执行**：`POST /api/runners/{id}/claim`（Backend 选 capability 匹配、未指定其他
   Runner 的任务，claim 即 RUNNING）、执行、`POST /api/runners/{id}/submit-result`
   （Backend 注册 Artifact、更新 NodeRun、reconcile 调度下游）。
@@ -359,7 +371,7 @@ Tool 节点（shell / git / test_command）不再由 Server Worker 或 FastAPI �
 - **安全**：`RELAYVIA_RUNNER_ROOT` 是必填项；所有命令在其下运行，working directory
   路径逃逸会被拒绝。Runner 不接收 Backend Credential（Secret 不外发）。每个命令使用
   独立进程组，超时时会终止整组子进程；stdout/stderr 截断并对常见 secret 形式脱敏。
-  Artifact 通过 base64 `content` 回传，Backend 注册（复用 Artifact Service）。
+  Artifact 使用独立 staging + 二进制上传接口；`submit-result` 只携带 `artifact://` 引用。
 - **Runner Lost / Retry**：任务 RUNNING 后 Runner 掉线 → Lease 过期 →
   `recover_expired` 回 PENDING → 可被同一目标 Runner 重领（at-least-once）。所有
   submit 都严格检查 lease expiry；retryable 失败按 Task 的 max attempts / backoff
@@ -371,8 +383,9 @@ Coding 场景的隔离工作目录：Tool 节点可声明 `workspace`（reposito
 由 Runner 在本地准备，并行 Node 不再共享同一工作树。
 
 - **Workspace Entity**（`workspaces` 表）：name / runner_id / repository / path /
-  branch / base_branch / workspace_type(local_repository|git_worktree) / status
-  (creating|ready|in_use|failed|released) / workflow_run_id / node_run_id。
+  branch / base_branch / workspace_type(local|worktree) / status
+  (creating|ready|in_use|failed|releasing|cleaning|cleanup_failed|released) /
+  workflow_run_id / node_run_id。
 - **Contract**：`ToolNodeConfig.workspace = {repository, strategy, base_branch}`。
 - **创建**：Scheduler 在调度 Tool/Coding Agent 节点时创建 Workspace 记录（CREATING），把
   workspace 配置放入 task payload；实际 git 操作由 Runner 执行（Backend 不碰 Runner
@@ -384,9 +397,12 @@ Coding 场景的隔离工作目录：Tool 节点可声明 `workspace`（reposito
 - **隔离**：并行分支各自 worktree（不同 branch/path），主仓库不被直接修改。
 - **Diff / Patch**：命令执行后 Runner 自动生成 `git diff HEAD`（含 untracked，
   intent-to-add）patch 作为 Artifact（`patch.diff`，`output_key=patch`）回传注册。
-- **回写**：Runner claim 时写入 `runner_id` 并标为 IN_USE；submit-result 时 Backend
-  更新 path/branch/status（成功→released，失败→failed）。手动 release 只能处理非活动
-  Workspace；清理策略：Run 完成后保留 worktree 供 Trace/调试，不自动删除。
+- **回写与清理**：Runner claim 时写入 `runner_id` 并标为 IN_USE；最终 submit-result 后
+  worktree 进入 RELEASING。原 Runner 领取 cleanup、验证目标位于受管 `worktrees/` 根目录，
+  执行 `git worktree remove --force` + prune，再回报 RELEASED；失败进入 CLEANUP_FAILED 并可
+  重试。失败任务的 worktree 默认保留为 FAILED 供调试，手动 Release 后执行同一清理协议；
+  cancel/fail-fast 时 Runner 在终止进程后直接清理并回报。`local` 策略永不删除主仓库，
+  Git branch 默认保留。
 - **API**：`GET /api/workspaces`、`GET /api/workspaces/{id}`、
   `POST /api/workspaces/{id}/release`。
 

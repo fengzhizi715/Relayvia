@@ -101,8 +101,12 @@ def derive_workflow_state(graph: WorkflowGraph, node_runs: list[NodeRun]) -> Wor
 
     - any FAILED node -> FAILED
     - all nodes terminal (and graph non-empty) -> COMPLETED
-    - any WAITING node -> WAITING
+    - WAITING only when no sibling is still runnable or in flight
     - otherwise -> RUNNING
+
+    A WorkflowRun may remain RUNNING while one branch is parked in WAITING.
+    This is essential for parallel Human/Wait branches: changing the parent to
+    WAITING too early would make queued Worker/Runner tasks unclaimable.
     """
     statuses = [NodeRunStatus(node_run.status) for node_run in node_runs]
     if any(status is NodeRunStatus.FAILED for status in statuses):
@@ -110,6 +114,14 @@ def derive_workflow_state(graph: WorkflowGraph, node_runs: list[NodeRun]) -> Wor
     if statuses and all(is_node_run_terminal(status) for status in statuses):
         return WorkflowRunStatus.COMPLETED
     if any(status is NodeRunStatus.WAITING for status in statuses):
+        active = {NodeRunStatus.QUEUED, NodeRunStatus.RUNNING, NodeRunStatus.RETRYING}
+        if any(status in active for status in statuses):
+            return WorkflowRunStatus.RUNNING
+        # Normally ready PENDING nodes have already been queued by
+        # schedule_ready_nodes(). Keep this guard so reconciliation remains
+        # safe if task creation was interrupted before the state derivation.
+        if graph is not None and find_ready_nodes(graph, node_runs):
+            return WorkflowRunStatus.RUNNING
         return WorkflowRunStatus.WAITING
     return WorkflowRunStatus.RUNNING
 

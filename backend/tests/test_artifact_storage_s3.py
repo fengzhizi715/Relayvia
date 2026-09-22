@@ -20,6 +20,9 @@ class FakeS3Client:
         if (Bucket, Key) not in self.objects:
             raise KeyError(Key)
 
+    def delete_object(self, *, Bucket, Key):
+        self.objects.pop((Bucket, Key), None)
+
 
 def test_s3_storage_uses_shared_object_keys_and_streams_content():
     client = FakeS3Client()
@@ -28,6 +31,10 @@ def test_s3_storage_uses_shared_object_keys_and_streams_content():
     assert client.objects[("relayvia", "runs/artifact-1")] == b"report"
     assert storage.open("artifact-1").read() == b"report"
     assert storage.exists("artifact-1") is True
+    assert storage.save_stream("artifact-2", BytesIO(b"stream")) == 6
+    assert storage.open("artifact-2").read() == b"stream"
+    storage.delete("artifact-2")
+    assert ("relayvia", "runs/artifact-2") not in client.objects
 
 
 def test_s3_storage_rejects_path_traversal_keys():

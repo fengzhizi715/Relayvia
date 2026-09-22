@@ -7,6 +7,7 @@ Relayvia 是一个连接、编排、执行和追踪已有 Agent 与 Service 的�
 P1 安全与可运行性边界：取消或 fail-fast 会向正在执行本地命令的 Runner 发出协作式终止信号；
 Router、Local/Custom/OpenCode/Cursor 等未安装 Execution Unit 的能力不能发布 Workflow Version；
 Connector/Runner 输出会在持久化前脱敏。多主机部署请使用 S3/MinIO Artifact Storage，而非各机器自己的本地目录。
+并行等待不会冻结仍可执行的兄弟分支；Runner worktree 完成后由原 Runner 安全清理；Runner token 支持禁用、撤销与轮换。Runner Artifact 使用独立 staging + 二进制上传，不进入任务结果 JSON。
 
 Execution Queue 文档：[`docs/execution-queue-worker.md`](docs/execution-queue-worker.md)
 Runtime 状态机文档：[`docs/workflow-runtime-state-machine.md`](docs/workflow-runtime-state-machine.md)

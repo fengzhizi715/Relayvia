@@ -17,6 +17,7 @@ from app.domain.execution.state_machine import ExecutionTaskStatus, is_execution
 from app.domain.runs.events import RunEventType, record_event
 from app.domain.runs.models import NodeRun, WorkflowRun
 from app.infrastructure.database.base import utc_now
+from app.infrastructure.database.retry import retry_mysql_transaction_async
 from app.runtime.state_machine import NodeRunStatus, WorkflowRunStatus, is_node_run_terminal, transition_node_run
 from .base import ClaimedTask, ExecutionBackend
 
@@ -26,6 +27,7 @@ class MySQLExecutionBackend(ExecutionBackend):
         self._session_factory = session_factory
         self.lease_seconds = lease_seconds
 
+    @retry_mysql_transaction_async()
     async def submit(self, workflow_run_id: str, node_run_id: str, *, payload: dict, priority: int, max_attempts: int, available_at) -> str:
         with self._session_factory() as db:
             task = ExecutionTask(
@@ -44,6 +46,7 @@ class MySQLExecutionBackend(ExecutionBackend):
             db.commit()
             return task.id
 
+    @retry_mysql_transaction_async()
     async def claim(
         self,
         worker_id: str,
@@ -76,12 +79,24 @@ class MySQLExecutionBackend(ExecutionBackend):
                     ExecutionTask.required_capability.in_(capabilities),
                     or_(ExecutionTask.runner_id.is_(None), ExecutionTask.runner_id == worker_id),
                 )
-            task = db.scalar(
-                query.order_by(ExecutionTask.priority.desc(), ExecutionTask.available_at.asc(), ExecutionTask.created_at.asc())
+            candidate = db.execute(
+                query.with_only_columns(ExecutionTask.id, ExecutionTask.workflow_run_id)
+                .order_by(ExecutionTask.priority.desc(), ExecutionTask.available_at.asc(), ExecutionTask.created_at.asc())
                 .limit(1)
-                .with_for_update(skip_locked=True)
+            ).first()
+            if candidate is None:
+                return None
+
+            # Canonical lock order: WorkflowRun -> ExecutionTask -> NodeRun.
+            # The final predicates are re-checked after locking because the
+            # candidate lookup is intentionally non-locking.
+            run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == candidate.workflow_run_id).with_for_update())
+            if run is None or WorkflowRunStatus(run.status) is not WorkflowRunStatus.RUNNING:
+                return None
+            task = db.scalar(
+                select(ExecutionTask).where(ExecutionTask.id == candidate.id).with_for_update(skip_locked=True)
             )
-            if task is None:
+            if task is None or task.status != ExecutionTaskStatus.PENDING.value:
                 return None
 
             lease_token = str(uuid4())
@@ -126,12 +141,16 @@ class MySQLExecutionBackend(ExecutionBackend):
                 lease_expires_at=now + timedelta(seconds=self.lease_seconds),
             )
 
+    @retry_mysql_transaction_async()
     async def start(self, task_id: str, worker_id: str, lease_token: str) -> bool:
         with self._session_factory() as db:
+            candidate = db.get(ExecutionTask, task_id)
+            if candidate is None:
+                return False
+            run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == candidate.workflow_run_id).with_for_update())
             task = db.scalar(select(ExecutionTask).where(ExecutionTask.id == task_id).with_for_update())
             if not self._owns(db, task, worker_id, lease_token):
                 return False
-            run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == task.workflow_run_id).with_for_update())
             if run is None or WorkflowRunStatus(run.status) is not WorkflowRunStatus.RUNNING:
                 self._release_or_cancel_for_run_state(db, task, run)
                 db.commit()
@@ -145,6 +164,7 @@ class MySQLExecutionBackend(ExecutionBackend):
             db.commit()
             return True
 
+    @retry_mysql_transaction_async()
     async def complete(
         self,
         task_id: str,
@@ -171,6 +191,7 @@ class MySQLExecutionBackend(ExecutionBackend):
             db.commit()
             return True
 
+    @retry_mysql_transaction_async()
     async def fail(
         self,
         task_id: str,
@@ -194,6 +215,7 @@ class MySQLExecutionBackend(ExecutionBackend):
             db.commit()
             return True
 
+    @retry_mysql_transaction_async()
     async def wait_node(self, task_id: str, worker_id: str, lease_token: str, *, waiting_reason: str, waiting_metadata: dict) -> bool:
         """A waiting node (Human Approval / Human Input / Wait timer) finishes
         its scheduling work and parks the NodeRun in a durable WAITING state.
@@ -215,6 +237,7 @@ class MySQLExecutionBackend(ExecutionBackend):
             db.commit()
             return True
 
+    @retry_mysql_transaction_async()
     async def schedule_retry(self, task_id: str, worker_id: str, lease_token: str, backoff_seconds: int) -> bool:
         with self._session_factory() as db:
             task = db.scalar(select(ExecutionTask).where(ExecutionTask.id == task_id).with_for_update())
@@ -233,6 +256,7 @@ class MySQLExecutionBackend(ExecutionBackend):
             db.commit()
             return True
 
+    @retry_mysql_transaction_async()
     async def renew_lease(self, task_id: str, worker_id: str, lease_token: str) -> bool:
         with self._session_factory() as db:
             task = db.scalar(select(ExecutionTask).where(ExecutionTask.id == task_id).with_for_update())
@@ -242,6 +266,7 @@ class MySQLExecutionBackend(ExecutionBackend):
             db.commit()
             return True
 
+    @retry_mysql_transaction_async()
     async def cancel(self, task_id: str) -> bool:
         with self._session_factory() as db:
             task = db.scalar(select(ExecutionTask).where(ExecutionTask.id == task_id).with_for_update())
@@ -255,6 +280,7 @@ class MySQLExecutionBackend(ExecutionBackend):
             db.commit()
             return True
 
+    @retry_mysql_transaction_async()
     async def recover_expired(self) -> int:
         with self._session_factory() as db:
             now = utc_now()
@@ -278,6 +304,7 @@ class MySQLExecutionBackend(ExecutionBackend):
             db.commit()
             return count
 
+    @retry_mysql_transaction_async()
     async def promote_due_retries(self) -> int:
         with self._session_factory() as db:
             now = utc_now()

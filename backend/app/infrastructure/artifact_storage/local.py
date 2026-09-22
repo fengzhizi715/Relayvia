@@ -6,6 +6,7 @@ root (Path Traversal protection).
 """
 
 import re
+import shutil
 from pathlib import Path
 from typing import BinaryIO
 
@@ -41,6 +42,12 @@ class LocalArtifactStorage(ArtifactStorage):
         path.write_bytes(content)
         return len(content)
 
+    def save_stream(self, key: str, stream: BinaryIO) -> int:
+        path = self._safe_path(key)
+        with path.open("wb") as target:
+            shutil.copyfileobj(stream, target, length=1024 * 1024)
+        return path.stat().st_size
+
     def open(self, key: str) -> BinaryIO:
         path = self._safe_path(key)
         if not path.exists():
@@ -52,6 +59,12 @@ class LocalArtifactStorage(ArtifactStorage):
             return self._safe_path(key).exists()
         except RelayviaError:
             return False
+
+    def delete(self, key: str) -> None:
+        try:
+            self._safe_path(key).unlink(missing_ok=True)
+        except RelayviaError:
+            raise
 
     def local_path(self, key: str) -> Path:
         path = self._safe_path(key)

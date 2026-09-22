@@ -61,6 +61,8 @@ CREATED → RUNNING ───────────┐                      �
 - 首次 `CREATED → RUNNING` 设置 `started_at`；进入 Terminal 设置 `finished_at`；
   `→ PAUSED` 设置 `paused_at`。
 - 所有状态变更必须经 `transition_workflow_run()`，禁止业务代码直接赋值 `run.status`。
+- `WAITING` 表示整个 Run 已经没有可继续推进的分支。并行 Workflow 可以包含 WAITING
+  NodeRun 而父 Run 仍保持 `RUNNING`，直到其他 queued/running/retrying/ready 工作结束。
 
 ## Node Run State Machine
 

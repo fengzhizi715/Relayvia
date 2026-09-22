@@ -9,15 +9,15 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, JSON, String
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.database.base import Base, TimestampMixin, utc_now
 
 
 class WorkspaceType(StrEnum):
-    LOCAL_REPOSITORY = "local_repository"
-    GIT_WORKTREE = "git_worktree"
+    LOCAL = "local"
+    WORKTREE = "worktree"
 
 
 class WorkspaceStatus(StrEnum):
@@ -25,11 +25,21 @@ class WorkspaceStatus(StrEnum):
     READY = "ready"
     IN_USE = "in_use"
     FAILED = "failed"
+    RELEASING = "releasing"
+    CLEANING = "cleaning"
+    CLEANUP_FAILED = "cleanup_failed"
     RELEASED = "released"
 
 
 class Workspace(Base):
     __tablename__ = "workspaces"
+    __table_args__ = (
+        CheckConstraint("workspace_type IN ('local', 'worktree')", name="ck_workspaces_type"),
+        CheckConstraint(
+            "status IN ('creating', 'ready', 'in_use', 'failed', 'releasing', 'cleaning', 'cleanup_failed', 'released')",
+            name="ck_workspaces_status",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -38,7 +48,7 @@ class Workspace(Base):
     path: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     base_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    workspace_type: Mapped[str] = mapped_column(String(32), nullable=False, default=WorkspaceType.GIT_WORKTREE.value)
+    workspace_type: Mapped[str] = mapped_column(String(32), nullable=False, default=WorkspaceType.WORKTREE.value)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=WorkspaceStatus.CREATING.value, index=True)
     workflow_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("workflow_runs.id", ondelete="RESTRICT"), nullable=False, index=True)
     node_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("node_runs.id", ondelete="RESTRICT"), nullable=False, unique=True, index=True)

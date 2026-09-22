@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import RelayviaError
@@ -17,6 +17,8 @@ from app.domain.artifacts.models import Artifact
 from app.domain.artifacts.reference import artifact_uri, parse_artifact_uri
 from app.infrastructure.artifact_storage.base import ArtifactStorage
 from app.runtime.executor.trace import sanitize_metadata
+from app.domain.execution.models import ExecutionTask
+from app.domain.execution.state_machine import ExecutionTaskStatus
 
 
 def _to_read(artifact: Artifact) -> dict[str, Any]:
@@ -60,8 +62,106 @@ def register_artifact_bytes(
         metadata_json=dict(metadata or {}),
     )
     db.add(artifact)
-    db.flush()
+    try:
+        db.flush()
+    except Exception:
+        storage.delete(artifact_id)
+        raise
+    # Storage is outside the database transaction. Compensate if the caller's
+    # later Node/Task update rolls back after this flush.
+    pending = {"cleanup": True}
+
+    def after_commit(_session) -> None:
+        pending["cleanup"] = False
+
+    def after_rollback(_session) -> None:
+        if pending["cleanup"]:
+            try:
+                storage.delete(artifact_id)
+            except Exception:
+                pass
+
+    event.listen(db, "after_commit", after_commit, once=True)
+    event.listen(db, "after_rollback", after_rollback, once=True)
     return artifact
+
+
+def create_runner_artifact_upload(
+    db: Session,
+    *,
+    runner_id: str,
+    task_id: str,
+    lease_token: str,
+    name: str,
+    artifact_type: str,
+    content_type: str | None,
+    metadata: dict[str, Any],
+    output_key: str | None,
+) -> Artifact:
+    task = db.get(ExecutionTask, task_id)
+    if (
+        task is None
+        or task.status != ExecutionTaskStatus.RUNNING.value
+        or task.locked_by != runner_id
+        or task.lease_token != lease_token
+    ):
+        raise RelayviaError("RUNNER_TASK_STALE", "Runner task is no longer eligible to upload artifacts", status_code=409)
+    artifact = Artifact(
+        id=str(uuid4()),
+        workflow_run_id=task.workflow_run_id,
+        producer_node_run_id=task.node_run_id,
+        type=artifact_type,
+        name=name,
+        uri="",  # assigned below after the stable id is generated
+        size=None,
+        content_type=content_type,
+        metadata_json={
+            **sanitize_metadata(metadata),
+            "upload_status": "staging",
+            **({"output_key": output_key} if output_key else {}),
+        },
+    )
+    artifact.uri = artifact_uri(artifact.id)
+    db.add(artifact)
+    db.commit()
+    db.refresh(artifact)
+    return artifact
+
+
+def validate_runner_artifact_upload(db: Session, *, artifact_id: str, runner_id: str, task_id: str, lease_token: str) -> Artifact:
+    artifact = db.get(Artifact, artifact_id)
+    task = db.get(ExecutionTask, task_id)
+    if artifact is None:
+        raise RelayviaError("ARTIFACT_NOT_FOUND", "Artifact not found", status_code=404)
+    if (
+        task is None
+        or task.status != ExecutionTaskStatus.RUNNING.value
+        or task.locked_by != runner_id
+        or task.lease_token != lease_token
+        or artifact.workflow_run_id != task.workflow_run_id
+        or artifact.producer_node_run_id != task.node_run_id
+    ):
+        raise RelayviaError("RUNNER_ARTIFACT_UPLOAD_FORBIDDEN", "Artifact upload does not belong to this Runner task", status_code=409)
+    if (artifact.metadata_json or {}).get("upload_status") != "staging":
+        raise RelayviaError("ARTIFACT_UPLOAD_NOT_STAGING", "Artifact upload is not in staging state", status_code=409)
+    return artifact
+
+
+def finalize_runner_artifact_upload(db: Session, artifact: Artifact, *, size: int) -> Artifact:
+    metadata = dict(artifact.metadata_json or {})
+    metadata["upload_status"] = "ready"
+    artifact.metadata_json = metadata
+    artifact.size = size
+    db.commit()
+    db.refresh(artifact)
+    return artifact
+
+
+def fail_runner_artifact_upload(db: Session, artifact: Artifact, *, error: str) -> None:
+    metadata = dict(artifact.metadata_json or {})
+    metadata.update(upload_status="failed", upload_error=error[:500])
+    artifact.metadata_json = metadata
+    db.commit()
 
 
 def register_external_artifact(
@@ -163,6 +263,8 @@ def register_artifact_candidates(
                         "Artifact reference belongs to a different Workflow Run",
                         status_code=422,
                     )
+                if (referenced.metadata_json or {}).get("upload_status") not in {None, "ready"}:
+                    raise RelayviaError("ARTIFACT_UPLOAD_INCOMPLETE", "Referenced Artifact upload is not complete", status_code=422)
                 artifact = None
                 reference = {"uri": referenced.uri, "type": referenced.type, "name": referenced.name}
             else:
@@ -225,4 +327,8 @@ __all__ = [
     "register_artifact_bytes",
     "register_artifact_candidates",
     "register_external_artifact",
+    "create_runner_artifact_upload",
+    "validate_runner_artifact_upload",
+    "finalize_runner_artifact_upload",
+    "fail_runner_artifact_upload",
 ]

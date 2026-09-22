@@ -418,40 +418,61 @@ export type RunEvent = {
   payload: Record<string, unknown>;
   created_at: string;
 };
-export const getRunEvents = (runId: string, afterId?: number) =>
-  request<RunEvent[]>(`/api/workflow-runs/${runId}/events${afterId ? `?after_id=${afterId}` : ""}`);
+export const getRunEvents = (runId: string, afterId = 0, limit = 200) => {
+  const query = new URLSearchParams({ after_id: String(afterId), limit: String(limit) });
+  return request<RunEvent[]>(`/api/workflow-runs/${runId}/events?${query}`);
+};
 
 /** Browser EventSource cannot attach Authorization. This fetch-based SSE
  * stream keeps the API base URL and bearer token without putting secrets in
  * an URL query string. */
 export async function streamRunEvents(
   runId: string,
-  options: { signal: AbortSignal; onEvent: (eventType: string) => void },
+  options: { signal: AbortSignal; onEvent: (eventType: string, eventId: number) => void; afterId?: number },
 ): Promise<void> {
-  const response = await fetch(apiUrl(`/api/workflow-runs/${runId}/events/stream`), {
-    headers: controlPlaneToken ? { Authorization: `Bearer ${controlPlaneToken}` } : {},
-    signal: options.signal,
-  });
-  if (!response.ok || !response.body) {
-    throw new ApiError("SSE_CONNECTION_FAILED", "Unable to open workflow event stream");
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffered = "";
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) return;
-      buffered += decoder.decode(value, { stream: true });
-      const frames = buffered.split("\n\n");
-      buffered = frames.pop() ?? "";
-      for (const frame of frames) {
-        const eventLine = frame.split("\n").find((line) => line.startsWith("event:"));
-        if (eventLine) options.onEvent(eventLine.slice("event:".length).trim());
+  let lastEventId = options.afterId ?? 0;
+  let retryDelay = 500;
+  while (!options.signal.aborted) {
+    try {
+      const query = lastEventId > 0 ? `?after_id=${lastEventId}` : "";
+      const response = await fetch(apiUrl(`/api/workflow-runs/${runId}/events/stream${query}`), {
+        headers: controlPlaneToken ? { Authorization: `Bearer ${controlPlaneToken}` } : {},
+        signal: options.signal,
+      });
+      if (!response.ok || !response.body) throw new ApiError("SSE_CONNECTION_FAILED", "Unable to open workflow event stream");
+      retryDelay = 500;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffered = "";
+      try {
+        while (!options.signal.aborted) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffered += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+          const frames = buffered.split("\n\n");
+          buffered = frames.pop() ?? "";
+          for (const frame of frames) {
+            const lines = frame.split("\n");
+            const idLine = lines.find((line) => line.startsWith("id:"));
+            const eventLine = lines.find((line) => line.startsWith("event:"));
+            const parsedId = idLine ? Number(idLine.slice(3).trim()) : lastEventId;
+            if (Number.isFinite(parsedId)) lastEventId = Math.max(lastEventId, parsedId);
+            if (eventLine) options.onEvent(eventLine.slice("event:".length).trim(), lastEventId);
+          }
+        }
+      } finally {
+        reader.releaseLock();
       }
+    } catch (error) {
+      if (options.signal.aborted) return;
+      if (!(error instanceof ApiError) && !(error instanceof TypeError)) throw error;
     }
-  } finally {
-    reader.releaseLock();
+    if (options.signal.aborted) return;
+    await new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(resolve, retryDelay);
+      options.signal.addEventListener("abort", () => { window.clearTimeout(timer); reject(new DOMException("Aborted", "AbortError")); }, { once: true });
+    });
+    retryDelay = Math.min(retryDelay * 2, 10_000);
   }
 }
 
@@ -470,7 +491,10 @@ export type Runner = {
 };
 export const getRunners = () => request<Runner[]>("/api/runners");
 export const getRunner = (id: string) => request<Runner>(`/api/runners/${id}`);
-export type WorkspaceStatus = "creating" | "ready" | "in_use" | "failed" | "released";
+export const setRunnerEnabled = (id: string, enabled: boolean) => request<Runner>(`/api/runners/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) });
+export const revokeRunner = (id: string) => request<Runner>(`/api/runners/${id}/revoke`, { method: "POST" });
+export const rotateRunnerToken = (id: string) => request<{ runner_id: string; enrollment_token: string }>(`/api/runners/${id}/rotate-token`, { method: "POST" });
+export type WorkspaceStatus = "creating" | "ready" | "in_use" | "failed" | "releasing" | "cleaning" | "cleanup_failed" | "released";
 export type Workspace = {
   id: string;
   name: string;
@@ -479,7 +503,7 @@ export type Workspace = {
   path: string | null;
   branch: string | null;
   base_branch: string | null;
-  workspace_type: "local" | "worktree" | "local_repository" | "git_worktree";
+  workspace_type: "local" | "worktree";
   status: WorkspaceStatus;
   workflow_run_id: string;
   node_run_id: string;
