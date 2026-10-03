@@ -7,7 +7,7 @@ import sqlalchemy as sa
 
 
 revision: str = "0013_workspace_lifecycle"
-down_revision: Union[str, None] = "0012_runner_security_and_bindings"
+down_revision: Union[str, None] = "0012_runner_security"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

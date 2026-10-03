@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 import os
 import time
 import uuid
@@ -21,10 +22,14 @@ from app.domain.execution.models import ExecutionTask
 from app.domain.execution.state_machine import ExecutionTaskStatus
 from app.domain.runs.models import NodeRun, WorkflowRun
 from app.domain.runs.service import cancel_run
+from app.domain.workflows.graph import empty_workflow_graph
 from app.domain.workflows.model import Workflow, WorkflowVersion
 from app.infrastructure.database.base import utc_now
 from app.infrastructure.execution_backend.mysql import MySQLExecutionBackend
 from app.runtime.state_machine import NodeRunStatus, WorkflowRunStatus
+
+
+EMPTY_GRAPH = empty_workflow_graph().model_dump(mode="json")
 
 
 MYSQL_TEST_URL = os.getenv("RELAYVIA_MYSQL_TEST_URL")
@@ -49,16 +54,16 @@ def test_mysql_8_claim_uses_migrated_schema_and_fences_one_owner():
             workflow = Workflow(name=f"mysql-{suffix}", status="active", draft_graph_json={}, graph_schema_version="1.0", current_version=1)
             db.add(workflow)
             db.flush()
-            version = WorkflowVersion(workflow_id=workflow.id, version=1, graph_schema_version="1.0", graph_json={})
+            version = WorkflowVersion(workflow_id=workflow.id, version=1, graph_schema_version="1.0", graph_json=EMPTY_GRAPH)
             db.add(version)
             db.flush()
-            run = WorkflowRun(workflow_id=workflow.id, workflow_version_id=version.id, version_number=1, status=WorkflowRunStatus.RUNNING.value, graph_schema_version="1.0", graph_snapshot_json={}, execution_snapshot_json={}, input_json={}, variables_json={})
+            run = WorkflowRun(workflow_id=workflow.id, workflow_version_id=version.id, version_number=1, status=WorkflowRunStatus.RUNNING.value, graph_schema_version="1.0", graph_snapshot_json=EMPTY_GRAPH, execution_snapshot_json={}, input_json={}, variables_json={})
             db.add(run)
             db.flush()
             node = NodeRun(workflow_run_id=run.id, node_id="node", node_type="data", node_subtype="transform", node_name_snapshot="node", status=NodeRunStatus.QUEUED.value)
             db.add(node)
             db.flush()
-            task = ExecutionTask(workflow_run_id=run.id, node_run_id=node.id, status=ExecutionTaskStatus.PENDING.value, payload_json={"node_id": "node"}, available_at=utc_now(), execution_key=f"{run.id}:{node.id}")
+            task = ExecutionTask(workflow_run_id=run.id, node_run_id=node.id, status=ExecutionTaskStatus.PENDING.value, payload_json={"node_id": "node"}, available_at=utc_now() - timedelta(seconds=2), execution_key=f"{run.id}:{node.id}")
             db.add(task)
             db.commit()
             workflow_id, version_id, run_id, node_id, task_id = workflow.id, version.id, run.id, node.id, task.id
@@ -102,17 +107,17 @@ def test_mysql_8_concurrent_claims_cancel_race_and_lease_recovery():
             workflow = Workflow(name=f"mysql-concurrent-{suffix}", status="active", draft_graph_json={}, graph_schema_version="1.0", current_version=1)
             db.add(workflow)
             db.flush()
-            version = WorkflowVersion(workflow_id=workflow.id, version=1, graph_schema_version="1.0", graph_json={})
+            version = WorkflowVersion(workflow_id=workflow.id, version=1, graph_schema_version="1.0", graph_json=EMPTY_GRAPH)
             db.add(version)
             db.flush()
-            run = WorkflowRun(workflow_id=workflow.id, workflow_version_id=version.id, version_number=1, status=WorkflowRunStatus.RUNNING.value, graph_schema_version="1.0", graph_snapshot_json={}, execution_snapshot_json={}, input_json={}, variables_json={})
+            run = WorkflowRun(workflow_id=workflow.id, workflow_version_id=version.id, version_number=1, status=WorkflowRunStatus.RUNNING.value, graph_schema_version="1.0", graph_snapshot_json=EMPTY_GRAPH, execution_snapshot_json={}, input_json={}, variables_json={})
             db.add(run)
             db.flush()
             for index in range(4):
                 node = NodeRun(workflow_run_id=run.id, node_id=f"node-{index}", node_type="data", node_subtype="transform", node_name_snapshot=f"node-{index}", status=NodeRunStatus.QUEUED.value)
                 db.add(node)
                 db.flush()
-                task = ExecutionTask(workflow_run_id=run.id, node_run_id=node.id, status=ExecutionTaskStatus.PENDING.value, payload_json={"node_id": node.node_id}, available_at=utc_now(), execution_key=f"{run.id}:{node.id}")
+                task = ExecutionTask(workflow_run_id=run.id, node_run_id=node.id, status=ExecutionTaskStatus.PENDING.value, payload_json={"node_id": node.node_id}, available_at=utc_now() - timedelta(seconds=2), execution_key=f"{run.id}:{node.id}")
                 db.add(task)
                 db.flush()
                 ids["nodes"].append(node.id)
@@ -120,7 +125,10 @@ def test_mysql_8_concurrent_claims_cancel_race_and_lease_recovery():
             db.commit()
             ids.update(workflow=workflow.id, version=version.id, run=run.id)
 
-        backend = MySQLExecutionBackend(factory, lease_seconds=1)
+        # Long lease: the recovery assertion below forces exactly one task's
+        # lease into the past, so sibling claims must not expire naturally even
+        # when the test talks to a remote database over higher latency.
+        backend = MySQLExecutionBackend(factory, lease_seconds=60)
 
         def claim_until_owned(worker: str):
             for _ in range(20):

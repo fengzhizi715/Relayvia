@@ -13,6 +13,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    is_mysql = op.get_bind().dialect.name == "mysql"
     op.create_table(
         "artifacts",
         sa.Column("id", sa.String(length=36), nullable=False),
@@ -28,8 +29,11 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["workflow_run_id"], ["workflow_runs.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["producer_node_run_id"], ["node_runs.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("uri", name="uq_artifacts_uri"),
+        *([] if is_mysql else [sa.UniqueConstraint("uri", name="uq_artifacts_uri")]),
     )
+    if is_mysql:
+        # InnoDB caps index keys at 3072 bytes; utf8mb4 VARCHAR(2048) needs a prefix.
+        op.create_index("uq_artifacts_uri", "artifacts", ["uri"], unique=True, mysql_length=768)
     op.create_index("ix_artifacts_workflow_run_id", "artifacts", ["workflow_run_id"], unique=False)
     op.create_index("ix_artifacts_producer_node_run_id", "artifacts", ["producer_node_run_id"], unique=False)
 

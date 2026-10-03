@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     app_name: str = "Relayvia API"
     environment: str = "development"
     database_url: str = "mysql+pymysql://relayvia:relayvia@127.0.0.1:3306/relayvia"
+    database_pool_size: int = 5
     cors_origins: str = "http://localhost:5173"
     credential_encryption_key: str | None = None
     control_plane_token: str | None = None

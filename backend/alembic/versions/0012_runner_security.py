@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0012_runner_security_and_bindings"
+revision: str = "0012_runner_security"
 down_revision: Union[str, None] = "0011_workspaces"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
