@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { translate } from "../../i18n";
 import { PALETTE_ITEMS, createWorkflowNode, generateEdgeId, generateNodeId } from "./nodeFactory";
 
 describe("Workflow Node factory", () => {
@@ -10,7 +11,7 @@ describe("Workflow Node factory", () => {
       expect(node.id).toMatch(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
       expect(node.type).toBe(item.type);
       expect(node.subtype).toBe(item.subtype);
-      expect(node.name).toBe(item.defaultName);
+      expect(node.name).toBe(translate("en", item.defaultNameKey));
       expect(node.position).toEqual({ x: 12, y: 34 });
       expect(typeof node.config).toBe("object");
       expect(node.input_mapping).toEqual({});
@@ -47,7 +48,7 @@ describe("Workflow Node factory", () => {
   });
 
   it("does not expose provider-specific palette items (Codex / Cursor / YoloWebAgent)", () => {
-    const labels = PALETTE_ITEMS.map((item) => item.label.toLowerCase());
+    const labels = PALETTE_ITEMS.map((item) => translate("en", item.labelKey).toLowerCase());
     expect(labels).not.toContain("codex");
     expect(labels).not.toContain("cursor");
     expect(labels).not.toContain("yolowebagent");

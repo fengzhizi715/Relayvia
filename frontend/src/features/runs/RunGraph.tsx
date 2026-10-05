@@ -3,22 +3,23 @@ import { Background, BackgroundVariant, Controls, Handle, Position, ReactFlow, t
 import "@xyflow/react/dist/style.css";
 
 import type { NodeRun, WorkflowGraph, WorkflowNode } from "../../api/client";
+import { useTranslation, type TranslationKey } from "../../i18n";
 import { graphToReactFlow, nodeReactFlowType, type WorkflowReactFlowNodeData } from "../../workflow/adapters/graphToReactFlow";
 import { NodeRunStatusBadge } from "./RunStatusBadge";
 
 const NodeRunsContext = createContext<Record<string, NodeRun>>({});
 
-const CATEGORY_META: Record<string, { category: string; glyph: string }> = {
-  agent: { category: "Agent", glyph: "AG" },
-  service: { category: "Service", glyph: "SV" },
-  tool: { category: "Tool", glyph: "TL" },
-  condition: { category: "Condition", glyph: "IF" },
-  parallel: { category: "Parallel", glyph: "∥" },
-  merge: { category: "Merge", glyph: "⨝" },
-  router: { category: "Router", glyph: "→" },
-  wait: { category: "Wait", glyph: "⏸" },
-  human: { category: "Human", glyph: "HM" },
-  data: { category: "Data", glyph: "DT" },
+const CATEGORY_META: Record<string, { labelKey: TranslationKey; glyph: string }> = {
+  agent: { labelKey: "palette.agent.label", glyph: "AG" },
+  service: { labelKey: "palette.service.label", glyph: "SV" },
+  tool: { labelKey: "palette.tool.label", glyph: "TL" },
+  condition: { labelKey: "palette.condition.label", glyph: "IF" },
+  parallel: { labelKey: "palette.parallel.label", glyph: "∥" },
+  merge: { labelKey: "palette.merge.label", glyph: "⨝" },
+  router: { labelKey: "palette.router.label", glyph: "→" },
+  wait: { labelKey: "palette.wait.label", glyph: "⏸" },
+  human: { labelKey: "palette.humanInput.label", glyph: "HM" },
+  data: { labelKey: "palette.data.label", glyph: "DT" },
 };
 
 function RuntimeHandles({ node }: { node: WorkflowNode }) {
@@ -43,10 +44,11 @@ function RuntimeHandles({ node }: { node: WorkflowNode }) {
 }
 
 function RuntimeNode({ id, data }: NodeProps<Node<WorkflowReactFlowNodeData>>) {
+  const { t } = useTranslation();
   const nodeRuns = useContext(NodeRunsContext);
   const node = data.workflowNode;
   const rfType = nodeReactFlowType(node);
-  const meta = CATEGORY_META[rfType] ?? { category: node.type, glyph: node.type.slice(0, 2).toUpperCase() };
+  const meta = CATEGORY_META[rfType] ?? { labelKey: "palette.data.label" as TranslationKey, glyph: node.type.slice(0, 2).toUpperCase() };
   const status = nodeRuns[id]?.status ?? "pending";
 
   return (
@@ -57,7 +59,7 @@ function RuntimeNode({ id, data }: NodeProps<Node<WorkflowReactFlowNodeData>>) {
             {meta.glyph}
           </span>
           <div className="workflow-node-title">
-            <span className="workflow-node-category">{meta.category}</span>
+            <span className="workflow-node-category">{t(meta.labelKey)}</span>
             <strong className="workflow-node-name">{node.name || node.id}</strong>
           </div>
         </div>

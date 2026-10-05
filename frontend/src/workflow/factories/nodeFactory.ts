@@ -1,4 +1,5 @@
 import type { WorkflowNode } from "../../api/client";
+import { t, type TranslationKey } from "../../i18n";
 
 export type WorkflowNodeType = WorkflowNode["type"];
 
@@ -7,10 +8,10 @@ export type PaletteCategory = "Data" | "Agent" | "Service" | "Tool" | "Logic" | 
 export type PaletteItem = {
   type: WorkflowNodeType;
   subtype: string;
-  label: string;
-  description: string;
+  labelKey: TranslationKey;
+  descriptionKey: TranslationKey;
+  defaultNameKey: TranslationKey;
   category: PaletteCategory;
-  defaultName: string;
   createConfig: () => Record<string, unknown>;
 };
 
@@ -26,126 +27,126 @@ export const PALETTE_ITEMS: PaletteItem[] = [
     category: "Data",
     type: "data",
     subtype: "input",
-    label: "Input",
-    description: "Declare Workflow input schema",
-    defaultName: "Input",
+    labelKey: "palette.input.label",
+    descriptionKey: "palette.input.description",
+    defaultNameKey: "palette.input.label",
     createConfig: () => ({ schema: { type: "object", properties: {} } }),
   },
   {
     category: "Data",
     type: "data",
     subtype: "transform",
-    label: "Transform",
-    description: "Map, select or constant values",
-    defaultName: "Transform",
+    labelKey: "palette.transform.label",
+    descriptionKey: "palette.transform.description",
+    defaultNameKey: "palette.transform.label",
     createConfig: () => ({ mappings: {} }),
   },
   {
     category: "Data",
     type: "data",
     subtype: "output",
-    label: "Output",
-    description: "Publish Workflow output mapping",
-    defaultName: "Output",
+    labelKey: "palette.output.label",
+    descriptionKey: "palette.output.description",
+    defaultNameKey: "palette.output.label",
     createConfig: () => ({ output_mapping: {} }),
   },
   {
     category: "Agent",
     type: "agent",
     subtype: "agent",
-    label: "Agent",
-    description: "Call an existing connected Agent",
-    defaultName: "Agent",
+    labelKey: "palette.agent.label",
+    descriptionKey: "palette.agent.description",
+    defaultNameKey: "palette.agent.label",
     createConfig: () => ({ agent_id: "", role: "", task_template: "", timeout_seconds: 600, retry: RETRY_DEFAULT }),
   },
   {
     category: "Service",
     type: "service",
     subtype: "http",
-    label: "Service",
-    description: "Call an existing Service Action",
-    defaultName: "Service",
+    labelKey: "palette.service.label",
+    descriptionKey: "palette.service.description",
+    defaultNameKey: "palette.service.label",
     createConfig: () => ({ service_id: "", service_action_id: "", timeout_seconds: 60, retry: RETRY_DEFAULT }),
   },
   {
     category: "Tool",
     type: "tool",
     subtype: "shell",
-    label: "Shell",
-    description: "Run a shell command",
-    defaultName: "Shell",
+    labelKey: "palette.shell.label",
+    descriptionKey: "palette.shell.description",
+    defaultNameKey: "palette.shell.label",
     createConfig: () => ({ command: "", working_directory: null, timeout_seconds: 600 }),
   },
   {
     category: "Tool",
     type: "tool",
     subtype: "git",
-    label: "Git",
-    description: "Run a git command",
-    defaultName: "Git",
+    labelKey: "palette.git.label",
+    descriptionKey: "palette.git.description",
+    defaultNameKey: "palette.git.label",
     createConfig: () => ({ command: "", working_directory: null, timeout_seconds: 600 }),
   },
   {
     category: "Tool",
     type: "tool",
     subtype: "test_command",
-    label: "Test Command",
-    description: "Run a test command",
-    defaultName: "Test",
+    labelKey: "palette.test.label",
+    descriptionKey: "palette.test.description",
+    defaultNameKey: "palette.test.defaultName",
     createConfig: () => ({ command: "", working_directory: null, timeout_seconds: 600 }),
   },
   {
     category: "Logic",
     type: "logic",
     subtype: "condition",
-    label: "Condition",
-    description: "Branch on a comparison",
-    defaultName: "Condition",
+    labelKey: "palette.condition.label",
+    descriptionKey: "palette.condition.description",
+    defaultNameKey: "palette.condition.label",
     createConfig: () => ({ expression: { left: "", operator: ">=", right: 0 } }),
   },
   {
     category: "Logic",
     type: "logic",
     subtype: "parallel",
-    label: "Parallel",
-    description: "Fan out to multiple branches",
-    defaultName: "Parallel",
+    labelKey: "palette.parallel.label",
+    descriptionKey: "palette.parallel.description",
+    defaultNameKey: "palette.parallel.label",
     createConfig: () => ({}),
   },
   {
     category: "Logic",
     type: "logic",
     subtype: "merge",
-    label: "Merge",
-    description: "Join branches",
-    defaultName: "Merge",
+    labelKey: "palette.merge.label",
+    descriptionKey: "palette.merge.description",
+    defaultNameKey: "palette.merge.label",
     createConfig: () => ({ strategy: "all" }),
   },
   {
     category: "Logic",
     type: "logic",
     subtype: "wait",
-    label: "Wait",
-    description: "Wait for a duration",
-    defaultName: "Wait",
+    labelKey: "palette.wait.label",
+    descriptionKey: "palette.wait.description",
+    defaultNameKey: "palette.wait.label",
     createConfig: () => ({ mode: "duration", duration_seconds: 60 }),
   },
   {
     category: "Human",
     type: "human",
     subtype: "approval",
-    label: "Approval",
-    description: "Request human approval",
-    defaultName: "Approval",
+    labelKey: "palette.approval.label",
+    descriptionKey: "palette.approval.description",
+    defaultNameKey: "palette.approval.label",
     createConfig: () => ({ title: "", description: "", allow_reject: true }),
   },
   {
     category: "Human",
     type: "human",
     subtype: "input",
-    label: "Human Input",
-    description: "Request human-provided values",
-    defaultName: "Human Input",
+    labelKey: "palette.humanInput.label",
+    descriptionKey: "palette.humanInput.description",
+    defaultNameKey: "palette.humanInput.label",
     createConfig: () => ({ form_schema: { type: "object", properties: {} } }),
   },
 ];
@@ -183,12 +184,12 @@ export function createWorkflowNode(
   position: { x: number; y: number },
 ): WorkflowNode {
   const item = findPaletteItem(type, subtype);
-  if (!item) throw new Error(`No Workflow Node definition for ${type}.${subtype}`);
+  if (!item) throw new Error(t("factory.unknownNode", { type, subtype }));
   return {
     id: generateNodeId(),
     type,
     subtype,
-    name: item.defaultName,
+    name: t(item.defaultNameKey),
     position: { x: position.x, y: position.y },
     config: item.createConfig(),
     input_mapping: {},

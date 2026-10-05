@@ -22,6 +22,7 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import type { WorkflowGraph } from "../../api/client";
+import { useTranslation } from "../../i18n";
 import {
   graphToReactFlow,
   reconcileWorkflowEdges,
@@ -35,6 +36,7 @@ import { useWorkflowBuilderStore } from "../store/workflowBuilderStore";
 const EMPTY_GRAPH: WorkflowGraph = { schema_version: "1.0", nodes: [], edges: [], variables: {}, metadata: {} };
 
 export function WorkflowCanvas() {
+  const { t } = useTranslation();
   const graph = useWorkflowBuilderStore((state) => state.graph);
   const readOnly = useWorkflowBuilderStore((state) => state.readOnly);
   const workflowKey = useWorkflowBuilderStore((state) => `${state.workflowId ?? ""}:${state.mode.kind}`);
@@ -143,9 +145,9 @@ export function WorkflowCanvas() {
       </ReactFlow>
       {empty && !readOnly && (
         <div className="canvas-empty-hint">
-          <p className="eyebrow">EMPTY CANVAS</p>
-          <h4>Start building</h4>
-          <p>Add a node from the left panel to begin.</p>
+          <p className="eyebrow">{t("canvas.emptyEyebrow")}</p>
+          <h4>{t("canvas.emptyTitle")}</h4>
+          <p>{t("canvas.emptyHint")}</p>
         </div>
       )}
     </div>

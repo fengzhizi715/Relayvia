@@ -1,4 +1,5 @@
 import type { WorkflowNode } from "../../api/client";
+import { useTranslation } from "../../i18n";
 import { useWorkflowBuilderStore } from "../store/workflowBuilderStore";
 import { ContextReferenceInput } from "../mapping/ContextReferenceInput";
 import { Field, NumberField, SectionTitle, SelectField } from "./fields";
@@ -6,6 +7,7 @@ import { Field, NumberField, SectionTitle, SelectField } from "./fields";
 export const CONDITION_OPERATORS = ["==", "!=", ">", ">=", "<", "<=", "contains", "not_contains", "is_empty", "is_not_empty"];
 
 export function LogicInspector({ node }: { node: WorkflowNode }) {
+  const { t } = useTranslation();
   const updateNode = useWorkflowBuilderStore((state) => state.updateNode);
   const readOnly = useWorkflowBuilderStore((state) => state.readOnly);
 
@@ -18,11 +20,11 @@ export function LogicInspector({ node }: { node: WorkflowNode }) {
       const expression = (node.config.expression as Record<string, unknown>) ?? {};
       return (
         <>
-          <SectionTitle>Condition</SectionTitle>
-          <Field label="Left value" hint="Compare a Context Reference against a constant or another value.">
+          <SectionTitle>{t("inspector.condition")}</SectionTitle>
+          <Field label={t("inspector.leftValue")} hint={t("inspector.leftValueHint")}>
             <ContextReferenceInput value={String(expression.left ?? "")} onChange={(left) => setConfig({ expression: { ...expression, left } })} disabled={readOnly} />
           </Field>
-          <Field label="Operator">
+          <Field label={t("inspector.operator")}>
             <SelectField value={String(expression.operator ?? "")} onChange={(operator) => setConfig({ expression: { ...expression, operator } })} disabled={readOnly}>
               {CONDITION_OPERATORS.map((operator) => (
                 <option key={operator} value={operator}>
@@ -31,23 +33,23 @@ export function LogicInspector({ node }: { node: WorkflowNode }) {
               ))}
             </SelectField>
           </Field>
-          <Field label="Right value">
+          <Field label={t("inspector.rightValue")}>
             <ContextReferenceInput value={String(expression.right ?? "")} onChange={(right) => setConfig({ expression: { ...expression, right } })} disabled={readOnly} placeholder="0.8" />
           </Field>
-          <p className="field-hint">True / false branches are created from the two output handles on the canvas.</p>
+          <p className="field-hint">{t("inspector.branchHint")}</p>
         </>
       );
     }
     case "wait":
       return (
         <>
-          <SectionTitle>Wait</SectionTitle>
-          <Field label="Mode">
+          <SectionTitle>{t("inspector.wait")}</SectionTitle>
+          <Field label={t("inspector.mode")}>
             <SelectField value={(node.config.mode as string) ?? "duration"} onChange={(mode) => setConfig({ mode })} disabled={readOnly || true}>
-              <option value="duration">Duration</option>
+              <option value="duration">{t("inspector.durationMode")}</option>
             </SelectField>
           </Field>
-          <Field label="Duration (seconds)">
+          <Field label={t("inspector.durationSeconds")}>
             <NumberField value={(node.config.duration_seconds as number) ?? 60} onChange={(duration_seconds) => setConfig({ duration_seconds: Number.isFinite(duration_seconds) ? duration_seconds : 60 })} disabled={readOnly} min={1} />
           </Field>
         </>
@@ -55,10 +57,10 @@ export function LogicInspector({ node }: { node: WorkflowNode }) {
     case "merge":
       return (
         <>
-          <SectionTitle>Merge</SectionTitle>
-          <Field label="Strategy">
+          <SectionTitle>{t("inspector.merge")}</SectionTitle>
+          <Field label={t("inspector.strategy")}>
             <SelectField value={(node.config.strategy as string) ?? "all"} onChange={(strategy) => setConfig({ strategy })} disabled={readOnly}>
-              <option value="all">All (wait for every branch)</option>
+              <option value="all">{t("inspector.allStrategy")}</option>
             </SelectField>
           </Field>
         </>
@@ -66,15 +68,15 @@ export function LogicInspector({ node }: { node: WorkflowNode }) {
     case "parallel":
       return (
         <>
-          <SectionTitle>Parallel</SectionTitle>
-          <p className="field-hint">Branches are expressed entirely by edges from the Parallel output handle. No branch list is stored in Node config.</p>
+          <SectionTitle>{t("inspector.parallel")}</SectionTitle>
+          <p className="field-hint">{t("inspector.parallelHint")}</p>
         </>
       );
     case "router":
       return (
         <>
-          <SectionTitle>Router</SectionTitle>
-          <p className="field-hint">Router semantics are reserved for a later phase. The node is not in the Palette but is preserved in existing Graphs.</p>
+          <SectionTitle>{t("inspector.router")}</SectionTitle>
+          <p className="field-hint">{t("inspector.routerHint")}</p>
         </>
       );
     default:

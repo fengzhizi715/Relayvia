@@ -13,6 +13,8 @@ import {
 } from "../../api/client";
 import { JsonEditor } from "../../components/JsonEditor";
 import { Modal } from "../../components/Modal";
+import { useTranslation, type Translator } from "../../i18n";
+import { credentialTypeLabel } from "../credentials/credentialType";
 
 type AgentFormProps = {
   agent?: Agent;
@@ -28,41 +30,42 @@ function objectJson(value: unknown) {
   return JSON.stringify(value ?? {}, null, 2);
 }
 
-function parseObject(value: string, label: string): Record<string, unknown> {
+function parseObject(value: string, label: string, t: Translator): Record<string, unknown> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error(`${label} must be valid JSON.`);
+    throw new Error(t("parse.mustBeJsonObject", { label }));
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${label} must be a JSON object.`);
+    throw new Error(t("parse.mustBeJsonObject", { label }));
   }
   return parsed as Record<string, unknown>;
 }
 
-function parseStringRecord(value: string, label: string): Record<string, string> {
-  const parsed = parseObject(value, label);
+function parseStringRecord(value: string, label: string, t: Translator): Record<string, string> {
+  const parsed = parseObject(value, label, t);
   if (Object.values(parsed).some((item) => typeof item !== "string")) {
-    throw new Error(`${label} values must all be strings.`);
+    throw new Error(t("parse.valuesMustBeStrings", { label }));
   }
   return parsed as Record<string, string>;
 }
 
-function parseCapabilities(value: string): Capability[] {
+function parseCapabilities(value: string, t: Translator): Capability[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error("Capabilities must be valid JSON.");
+    throw new Error(t("agentForm.capabilitiesInvalidJson"));
   }
   if (!Array.isArray(parsed) || parsed.some((item) => !item || typeof item !== "object" || typeof (item as Capability).name !== "string")) {
-    throw new Error("Capabilities must be an array of objects with a name.");
+    throw new Error(t("agentForm.capabilitiesInvalidShape"));
   }
   return parsed as Capability[];
 }
 
 export function AgentForm({ agent, credentials, runners, onClose, onSaved }: AgentFormProps) {
+  const { t } = useTranslation();
   const [name, setName] = useState(agent?.name ?? "");
   const [description, setDescription] = useState(agent?.description ?? "");
   const [connectorType, setConnectorType] = useState(agent?.connector_type ?? "http");
@@ -97,16 +100,16 @@ export function AgentForm({ agent, credentials, runners, onClose, onSaved }: Age
         endpoint: endpoint || undefined,
         http_method: httpMethod,
         health_check_url: healthCheckUrl || undefined,
-        headers: parseStringRecord(headers, "Headers"),
-        capabilities: parseCapabilities(capabilities),
-        input_schema: parseObject(inputSchema, "Input schema"),
-        output_schema: parseObject(outputSchema, "Output schema"),
+        headers: parseStringRecord(headers, t("agentForm.headers"), t),
+        capabilities: parseCapabilities(capabilities, t),
+        input_schema: parseObject(inputSchema, t("agentForm.inputSchema"), t),
+        output_schema: parseObject(outputSchema, t("agentForm.outputSchema"), t),
         credential_id: credentialId || null,
         runner_id: runnerId || undefined,
         executable: executable || undefined,
         timeout_seconds: Number(timeout),
         enabled: agent?.enabled ?? true,
-        metadata: parseObject(metadata, "Metadata"),
+        metadata: parseObject(metadata, t("agentForm.metadata"), t),
       };
       mutation.mutate(payload);
     } catch (value) {
@@ -115,42 +118,42 @@ export function AgentForm({ agent, credentials, runners, onClose, onSaved }: Age
   }
 
   return (
-    <Modal title={agent ? "Edit Agent" : "Connect Agent"} eyebrow="EXISTING CAPABILITY" onClose={onClose}>
+    <Modal title={agent ? t("agentForm.editTitle") : t("agentForm.connectTitle")} eyebrow={t("agentForm.eyebrow")} onClose={onClose}>
       <form className="form-stack" onSubmit={submit}>
         <div className="form-section">
-          <p className="form-section-title">Basic information</p>
+          <p className="form-section-title">{t("agentForm.basicInfo")}</p>
           <div className="form-grid">
-            <label className="field"><span>Name</span><input className="input" required value={name} onChange={(event) => setName(event.target.value)} placeholder="Code Review Agent" /></label>
-            <label className="field"><span>Connector type</span><select className="input" value={connectorType} onChange={(event) => setConnectorType(event.target.value as typeof connectorType)}><option value="http">HTTP</option><option value="codex">Codex via Runner</option><option value="local">Local (metadata only)</option><option value="custom">Custom (metadata only)</option></select></label>
+            <label className="field"><span>{t("agentForm.name")}</span><input className="input" required value={name} onChange={(event) => setName(event.target.value)} placeholder={t("agentForm.namePlaceholder")} /></label>
+            <label className="field"><span>{t("agentForm.connectorType")}</span><select className="input" value={connectorType} onChange={(event) => setConnectorType(event.target.value as typeof connectorType)}><option value="http">{t("agentForm.http")}</option><option value="codex">{t("agentForm.codexViaRunner")}</option><option value="local">{t("agentForm.localMetadata")}</option><option value="custom">{t("agentForm.customMetadata")}</option></select></label>
           </div>
-          <label className="field"><span>Description</span><textarea className="input" rows={2} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What this existing agent does" /></label>
+          <label className="field"><span>{t("agentForm.description")}</span><textarea className="input" rows={2} value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("agentForm.descriptionPlaceholder")} /></label>
         </div>
 
         <div className="form-section">
-          <p className="form-section-title">Connection</p>
+          <p className="form-section-title">{t("agentForm.connection")}</p>
           {connectorType === "http" ? <div className="form-grid">
-            <label className="field field--wide"><span>Endpoint</span><input className="input" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="https://agent.example.com/invoke" /></label>
-            <label className="field"><span>HTTP method</span><select className="input" value={httpMethod} onChange={(event) => setHttpMethod(event.target.value as typeof httpMethod)}><option>POST</option><option>GET</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></label>
-            <label className="field field--wide"><span>Health check URL</span><input className="input" value={healthCheckUrl} onChange={(event) => setHealthCheckUrl(event.target.value)} placeholder="https://agent.example.com/health" /></label>
-            <label className="field"><span>Timeout (seconds)</span><input className="input" min={1} max={3600} type="number" value={timeout} onChange={(event) => setTimeout(event.target.value)} /></label>
+            <label className="field field--wide"><span>{t("agentForm.endpoint")}</span><input className="input" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="https://agent.example.com/invoke" /></label>
+            <label className="field"><span>{t("agentForm.httpMethod")}</span><select className="input" value={httpMethod} onChange={(event) => setHttpMethod(event.target.value as typeof httpMethod)}><option>POST</option><option>GET</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></label>
+            <label className="field field--wide"><span>{t("agentForm.healthCheckUrl")}</span><input className="input" value={healthCheckUrl} onChange={(event) => setHealthCheckUrl(event.target.value)} placeholder="https://agent.example.com/health" /></label>
+            <label className="field"><span>{t("agentForm.timeoutSeconds")}</span><input className="input" min={1} max={3600} type="number" value={timeout} onChange={(event) => setTimeout(event.target.value)} /></label>
           </div> : connectorType === "codex" ? <div className="form-grid">
-            <label className="field field--wide"><span>Runner</span><select className="input" required value={runnerId} onChange={(event) => setRunnerId(event.target.value)}><option value="">Select a Runner</option>{runners.map((runner) => <option key={runner.id} value={runner.id}>{runner.name} · {runner.status} · {runner.capabilities.join(", ")}</option>)}</select></label>
-            <label className="field field--wide"><span>Codex executable</span><input className="input" value={executable} onChange={(event) => setExecutable(event.target.value)} placeholder="codex (default, resolved on the Runner)" /></label>
-            <label className="field"><span>Timeout (seconds)</span><input className="input" min={1} max={3600} type="number" value={timeout} onChange={(event) => setTimeout(event.target.value)} /></label>
-          </div> : <label className="field"><span>Timeout (seconds)</span><input className="input" min={1} max={3600} type="number" value={timeout} onChange={(event) => setTimeout(event.target.value)} /></label>}
-          {connectorType === "http" && <><label className="field"><span>Credential</span><select className="input" value={credentialId} onChange={(event) => setCredentialId(event.target.value)}><option value="">No credential</option>{credentials.map((credential) => <option key={credential.id} value={credential.id}>{credential.name} · {credential.type}</option>)}</select></label><JsonEditor label="Headers" value={headers} onChange={setHeaders} rows={3} hint="Do not put API keys or bearer tokens here; use a Credential." /></>}
+            <label className="field field--wide"><span>{t("agentForm.runner")}</span><select className="input" required value={runnerId} onChange={(event) => setRunnerId(event.target.value)}><option value="">{t("agentForm.selectRunner")}</option>{runners.map((runner) => <option key={runner.id} value={runner.id}>{runner.name} · {runner.status} · {runner.capabilities.join(", ")}</option>)}</select></label>
+            <label className="field field--wide"><span>{t("agentForm.codexExecutable")}</span><input className="input" value={executable} onChange={(event) => setExecutable(event.target.value)} placeholder={t("agentForm.codexExecutablePlaceholder")} /></label>
+            <label className="field"><span>{t("agentForm.timeoutSeconds")}</span><input className="input" min={1} max={3600} type="number" value={timeout} onChange={(event) => setTimeout(event.target.value)} /></label>
+          </div> : <label className="field"><span>{t("agentForm.timeoutSeconds")}</span><input className="input" min={1} max={3600} type="number" value={timeout} onChange={(event) => setTimeout(event.target.value)} /></label>}
+          {connectorType === "http" && <><label className="field"><span>{t("agentForm.credential")}</span><select className="input" value={credentialId} onChange={(event) => setCredentialId(event.target.value)}><option value="">{t("agentForm.noCredential")}</option>{credentials.map((credential) => <option key={credential.id} value={credential.id}>{credential.name} · {credentialTypeLabel(credential.type, t)}</option>)}</select></label><JsonEditor label={t("agentForm.headers")} value={headers} onChange={setHeaders} rows={3} hint={t("agentForm.headersHint")} /></>}
         </div>
 
         <div className="form-section">
-          <p className="form-section-title">Invocation contract</p>
-          <JsonEditor label="Capabilities" value={capabilities} onChange={setCapabilities} rows={4} hint='Example: [{"name":"code_review","description":"Review source code"}]' />
-          <JsonEditor label="Input schema" value={inputSchema} onChange={setInputSchema} />
-          <JsonEditor label="Output schema" value={outputSchema} onChange={setOutputSchema} />
-          <JsonEditor label="Metadata" value={metadata} onChange={setMetadata} rows={4} />
+          <p className="form-section-title">{t("agentForm.invocationContract")}</p>
+          <JsonEditor label={t("agentForm.capabilities")} value={capabilities} onChange={setCapabilities} rows={4} hint={t("agentForm.capabilitiesHint")} />
+          <JsonEditor label={t("agentForm.inputSchema")} value={inputSchema} onChange={setInputSchema} />
+          <JsonEditor label={t("agentForm.outputSchema")} value={outputSchema} onChange={setOutputSchema} />
+          <JsonEditor label={t("agentForm.metadata")} value={metadata} onChange={setMetadata} rows={4} />
         </div>
 
         {error && <div className="inline-error">{error}</div>}
-        <div className="modal-actions"><button className="button" type="button" onClick={onClose}>Cancel</button><button className="button button--primary" disabled={mutation.isPending} type="submit">{mutation.isPending ? "Saving..." : agent ? "Save changes" : "Connect Agent"}</button></div>
+        <div className="modal-actions"><button className="button" type="button" onClick={onClose}>{t("common.cancel")}</button><button className="button button--primary" disabled={mutation.isPending} type="submit">{mutation.isPending ? t("common.saving") : agent ? t("common.saveChanges") : t("agentForm.connectTitle")}</button></div>
       </form>
     </Modal>
   );

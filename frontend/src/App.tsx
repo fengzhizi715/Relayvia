@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { getHealth } from "./api/client";
@@ -10,33 +11,42 @@ import { RunnerListPage } from "./features/runners/RunnerListPage";
 import { ServicesPage } from "./features/services/ServicesPage";
 import { WorkspaceListPage } from "./features/workspaces/WorkspaceListPage";
 import { WorkflowsPage } from "./features/workflows/WorkflowsPage";
+import { LanguageSwitcher } from "./i18n/LanguageSwitcher";
+import { useTranslation, type TranslationKey } from "./i18n";
 import { useWorkflowBuilderStore } from "./workflow/store/workflowBuilderStore";
 
-const sections: Array<{ id: AppSection; label: string }> = [
-  { id: "overview", label: "Overview" },
-  { id: "agents", label: "Agents" },
-  { id: "services", label: "Services" },
-  { id: "credentials", label: "Credentials" },
-  { id: "workflows", label: "Workflows" },
-  { id: "runs", label: "Runs" },
-  { id: "runners", label: "Runners" },
-  { id: "workspaces", label: "Workspaces" },
-];
+const SECTION_LABEL_KEYS: Record<AppSection, TranslationKey> = {
+  overview: "nav.overview",
+  agents: "nav.agents",
+  services: "nav.services",
+  credentials: "nav.credentials",
+  workflows: "nav.workflows",
+  runs: "nav.runs",
+  runners: "nav.runners",
+  workspaces: "nav.workspaces",
+};
+
+const SECTIONS: AppSection[] = ["overview", "agents", "services", "credentials", "workflows", "runs", "runners", "workspaces"];
 
 export default function App() {
   const activeSection = useAppStore((state) => state.activeSection);
   const setActiveSection = useAppStore((state) => state.setActiveSection);
+  const { t, language } = useTranslation();
   const health = useQuery({
     queryKey: ["health"],
     queryFn: getHealth,
     retry: false,
   });
 
+  useEffect(() => {
+    document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+  }, [language]);
+
   function changeSection(section: AppSection) {
     if (activeSection === "workflows" && section !== "workflows") {
       const builder = useWorkflowBuilderStore.getState();
       if (builder.workflowId !== null && !builder.readOnly && builder.isDirty) {
-        if (!window.confirm("You have unsaved Builder changes that will be lost. Leave anyway?")) return;
+        if (!window.confirm(t("app.confirmLeaveBuilder"))) return;
       }
     }
     setActiveSection(section);
@@ -47,71 +57,71 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand-mark">R</div>
         <div>
-          <p className="eyebrow">ORCHESTRATION PLATFORM</p>
+          <p className="eyebrow">{t("app.orchestrationPlatform")}</p>
           <h1>Relayvia</h1>
         </div>
-        <nav aria-label="Primary navigation">
-          {sections.map((section) => (
+        <nav aria-label={t("app.primaryNavigation")}>
+          {SECTIONS.map((section) => (
             <button
-              className={activeSection === section.id ? "nav-item nav-item--active" : "nav-item"}
-              key={section.id}
-              onClick={() => changeSection(section.id)}
+              className={activeSection === section ? "nav-item nav-item--active" : "nav-item"}
+              key={section}
+              onClick={() => changeSection(section)}
               type="button"
             >
-              {section.label}
+              {t(SECTION_LABEL_KEYS[section])}
             </button>
           ))}
         </nav>
         <div className="sidebar-footer">
           <span className="pulse-dot" />
-          Durable runtime ready
+          {t("app.runtimeReady")}
         </div>
       </aside>
 
       <main className="main-content">
         <header className="topbar">
           <div>
-            <p className="eyebrow">CONTROL PLANE</p>
-            <h2>{activeSection === "overview" ? "Overview" : activeSection}</h2>
+            <p className="eyebrow">{t("app.controlPlane")}</p>
+            <h2>{t(SECTION_LABEL_KEYS[activeSection])}</h2>
           </div>
-          <StatusBadge
-            label={health.isPending ? "Checking API" : health.isSuccess ? `API ${health.data.status}` : "API offline"}
-            tone={health.isSuccess ? (health.data.status === "ok" ? "success" : "warning") : "neutral"}
-          />
+          <div className="topbar-actions">
+            <LanguageSwitcher />
+            <StatusBadge
+              label={health.isPending ? t("app.checkingApi") : health.isSuccess ? t("app.apiStatus", { status: health.data.status }) : t("app.apiOffline")}
+              tone={health.isSuccess ? (health.data.status === "ok" ? "success" : "warning") : "neutral"}
+            />
+          </div>
         </header>
 
         {activeSection === "agents" ? <AgentsPage /> : activeSection === "services" ? <ServicesPage /> : activeSection === "credentials" ? <CredentialsPage /> : activeSection === "workflows" ? <WorkflowsPage /> : activeSection === "runs" ? <RunsPage /> : activeSection === "runners" ? <RunnerListPage /> : activeSection === "workspaces" ? <WorkspaceListPage /> : <>
         <section className="hero-card">
           <div>
-            <p className="eyebrow">FOUNDATION READY</p>
-            <h3>Connect capabilities. Orchestrate work.</h3>
-            <p className="hero-copy">
-              Relayvia connects existing Agents and Services so workflows can be validated, executed, and traced
-              from one control plane.
-            </p>
+            <p className="eyebrow">{t("app.foundationReady")}</p>
+            <h3>{t("app.heroTitle")}</h3>
+            <p className="hero-copy">{t("app.heroCopy")}</p>
           </div>
           <div className="hero-orbit" aria-hidden="true">
-            <span>Agent</span>
-            <span>Workflow</span>
-            <span>Trace</span>
+            <span>{t("app.heroAgent")}</span>
+            <span>{t("app.heroWorkflow")}</span>
+            <span>{t("app.heroTrace")}</span>
           </div>
         </section>
 
-        <section className="status-grid" aria-label="Platform status">
+        <section className="status-grid" aria-label={t("app.platformStatus")}>
           <article className="status-card">
-            <p className="eyebrow">API</p>
-            <h3>{health.isSuccess ? health.data.service : "Waiting for FastAPI"}</h3>
-            <p>{health.isSuccess ? `Database: ${health.data.database}` : "Start the backend on port 8000 to connect."}</p>
+            <p className="eyebrow">{t("app.api")}</p>
+            <h3>{health.isSuccess ? health.data.service : t("app.waitingForFastapi")}</h3>
+            <p>{health.isSuccess ? t("app.database", { database: health.data.database }) : t("app.startBackend")}</p>
           </article>
           <article className="status-card">
-            <p className="eyebrow">NEXT LAYER</p>
-            <h3>Durable orchestration</h3>
-            <p>Immutable workflow versions, validated graph contracts, durable queueing, and independent Workers are active.</p>
+            <p className="eyebrow">{t("app.nextLayer")}</p>
+            <h3>{t("app.durableOrchestration")}</h3>
+            <p>{t("app.durableOrchestrationCopy")}</p>
           </article>
           <article className="status-card status-card--accent">
-            <p className="eyebrow">RUNTIME PRINCIPLE</p>
-            <h3>Existing capability first</h3>
-            <p>Connector → Execution Unit → Workflow Runtime → Trace</p>
+            <p className="eyebrow">{t("app.runtimePrinciple")}</p>
+            <h3>{t("app.existingCapabilityFirst")}</h3>
+            <p>{t("app.connectorFlow")}</p>
           </article>
         </section>
         </>}

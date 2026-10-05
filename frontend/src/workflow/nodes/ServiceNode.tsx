@@ -1,11 +1,13 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 
+import { useTranslation } from "../../i18n";
 import { useServiceActions, useServices } from "../registry/useRegistry";
 import { BaseWorkflowNode, useResolvedWorkflowNode } from "./BaseWorkflowNode";
 import type { WorkflowReactFlowNodeData } from "../adapters/graphToReactFlow";
 import { nodeCompletenessErrors } from "../validation/localValidation";
 
 export function ServiceNode({ id, data }: NodeProps<Node<WorkflowReactFlowNodeData>>) {
+  const { t } = useTranslation();
   const node = useResolvedWorkflowNode(id, data);
   const { services } = useServices();
   const serviceId = (node?.config.service_id as string | undefined) ?? null;
@@ -16,24 +18,27 @@ export function ServiceNode({ id, data }: NodeProps<Node<WorkflowReactFlowNodeDa
   const service = services.find((item) => item.id === serviceId);
   const action = actions.find((item) => item.id === actionId);
   const completeness = nodeCompletenessErrors(node);
-  const warning = completeness[0]?.message ?? (serviceId && !service ? "Service not found" : actionId && !action ? "Service Action not found" : service && !service.enabled ? "Service is disabled" : null);
+  const firstIssue = completeness[0];
+  const warning = firstIssue
+    ? t(firstIssue.messageKey, firstIssue.messageParams)
+    : serviceId && !service ? t("node.serviceNotFound") : actionId && !action ? t("node.serviceActionNotFound") : service && !service.enabled ? t("node.serviceDisabled") : null;
 
   return (
     <div className="workflow-node-root">
       <BaseWorkflowNode
         node={node}
-        category="Service"
+        category={t("palette.service.label")}
         glyph="SV"
         warning={warning}
         summary={
           <>
-            <span className="workflow-node-summary-line">{service ? service.name : serviceId ? "Service unavailable" : "Not configured"}</span>
+            <span className="workflow-node-summary-line">{service ? service.name : serviceId ? t("node.serviceUnavailable") : t("node.notConfigured")}</span>
             {action ? (
               <span className="workflow-node-summary-muted">
                 {action.method} {action.path}
               </span>
             ) : actionId ? (
-              <span className="workflow-node-summary-muted">Action unavailable</span>
+              <span className="workflow-node-summary-muted">{t("node.actionUnavailable")}</span>
             ) : null}
           </>
         }

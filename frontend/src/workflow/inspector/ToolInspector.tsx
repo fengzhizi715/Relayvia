@@ -1,15 +1,17 @@
 import type { WorkflowNode } from "../../api/client";
+import { useTranslation, type TranslationKey } from "../../i18n";
 import { useWorkflowBuilderStore } from "../store/workflowBuilderStore";
 import { InputMappingEditor } from "../mapping/InputMappingEditor";
 import { Field, NumberField, SectionTitle, TextField } from "./fields";
 
-const TOOL_LABELS: Record<string, string> = {
-  shell: "Shell",
-  git: "Git",
-  test_command: "Test Command",
+const TOOL_LABEL_KEYS: Record<string, TranslationKey> = {
+  shell: "palette.shell.label",
+  git: "palette.git.label",
+  test_command: "palette.test.label",
 };
 
 export function ToolInspector({ node }: { node: WorkflowNode }) {
+  const { t } = useTranslation();
   const updateNode = useWorkflowBuilderStore((state) => state.updateNode);
   const readOnly = useWorkflowBuilderStore((state) => state.readOnly);
 
@@ -17,15 +19,18 @@ export function ToolInspector({ node }: { node: WorkflowNode }) {
     updateNode(node.id, { config: { ...node.config, ...patch } });
   }
 
+  const toolLabelKey = TOOL_LABEL_KEYS[node.subtype];
+  const toolLabel = toolLabelKey ? t(toolLabelKey) : t("palette.category.tool");
+
   return (
     <>
-      <SectionTitle>Basic information</SectionTitle>
-      <Field label="Node name">
+      <SectionTitle>{t("inspector.basicInfo")}</SectionTitle>
+      <Field label={t("inspector.nodeName")}>
         <input className="input" value={node.name} disabled={readOnly} onChange={(event) => updateNode(node.id, { name: event.target.value })} />
       </Field>
 
-      <SectionTitle>{TOOL_LABELS[node.subtype] ?? "Tool"}</SectionTitle>
-      <Field label="Command">
+      <SectionTitle>{toolLabel}</SectionTitle>
+      <Field label={t("inspector.command")}>
         <TextField
           value={(node.config.command as string) ?? ""}
           onChange={(command) => setConfig({ command })}
@@ -33,15 +38,15 @@ export function ToolInspector({ node }: { node: WorkflowNode }) {
           placeholder={node.subtype === "git" ? "git status" : "pytest"}
         />
       </Field>
-      <Field label="Runner ID" hint="Required before a Tool node can run. Pin local commands to the Runner that owns the working directory.">
+      <Field label={t("inspector.runnerId")} hint={t("inspector.runnerIdHint")}>
         <TextField
           value={(node.config.runner_id as string) ?? ""}
           onChange={(runner_id) => setConfig({ runner_id: runner_id || null })}
           disabled={readOnly}
-          placeholder="Runner ID from the Runners page"
+          placeholder={t("inspector.runnerIdPlaceholder")}
         />
       </Field>
-      <Field label="Working directory" hint="Optional. Paths must remain inside the assigned Runner Root.">
+      <Field label={t("inspector.workingDirectory")} hint={t("inspector.workingDirectoryHint")}>
         <TextField
           value={(node.config.working_directory as string) ?? ""}
           onChange={(working_directory) => setConfig({ working_directory: working_directory || null })}
@@ -49,11 +54,11 @@ export function ToolInspector({ node }: { node: WorkflowNode }) {
           placeholder="/path/to/repo"
         />
       </Field>
-      <Field label="Timeout (seconds)">
+      <Field label={t("inspector.timeout")}>
         <NumberField value={(node.config.timeout_seconds as number) ?? 600} onChange={(timeout_seconds) => setConfig({ timeout_seconds: Number.isFinite(timeout_seconds) ? timeout_seconds : 600 })} disabled={readOnly} min={1} />
       </Field>
 
-      <SectionTitle>Input mapping</SectionTitle>
+      <SectionTitle>{t("inspector.inputMapping")}</SectionTitle>
       <InputMappingEditor mapping={node.input_mapping} onChange={(input_mapping) => updateNode(node.id, { input_mapping })} disabled={readOnly} />
     </>
   );

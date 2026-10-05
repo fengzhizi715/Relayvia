@@ -24,6 +24,11 @@ nav { display: grid; gap: 5px; }
 .main-content { width: min(1400px, 100%); margin: 0 auto; padding: 34px 42px 60px; }
 .topbar { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 34px; }
 .topbar h2 { font-size: 30px; letter-spacing: -.04em; text-transform: capitalize; }
+.topbar-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 12px; }
+.language-switcher { display: flex; gap: 4px; border: 1px solid #253754; border-radius: 10px; background: #0d1626; padding: 3px; }
+.language-switcher-item { border: 0; border-radius: 7px; background: transparent; color: #8898b4; cursor: pointer; font-size: 12px; font-weight: 650; padding: 6px 10px; transition: .2s ease; }
+.language-switcher-item:hover { color: #f2f7ff; }
+.language-switcher-item--active { background: #1c2c47; color: #7be0c1; }
 .status-badge { border-radius: 999px; padding: 7px 11px; font-size: 11px; font-weight: 700; letter-spacing: .04em; }
 .status-badge--success { background: rgba(123, 224, 193, .12); color: #7be0c1; }
 .status-badge--warning { background: rgba(246, 194, 104, .12); color: #f6c268; }

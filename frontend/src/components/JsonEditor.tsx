@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { useTranslation } from "../i18n";
+
 type JsonEditorProps = {
   label: string;
   value: string;
@@ -10,6 +12,7 @@ type JsonEditorProps = {
 };
 
 export function JsonEditor({ label, value, onChange, rows = 6, hint, readOnly = false }: JsonEditorProps) {
+  const { t } = useTranslation();
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -21,7 +24,7 @@ export function JsonEditor({ label, value, onChange, rows = 6, hint, readOnly = 
       onChange(JSON.stringify(JSON.parse(value), null, 2));
       setError(null);
     } catch {
-      setError("Enter valid JSON before formatting.");
+      setError(t("json.invalid"));
     }
   }
 
@@ -29,7 +32,7 @@ export function JsonEditor({ label, value, onChange, rows = 6, hint, readOnly = 
     <div className="field field--json">
       <div className="field-label-row">
         <label>{label}</label>
-        {!readOnly && <button className="text-button" type="button" onClick={format}>Format</button>}
+        {!readOnly && <button className="text-button" type="button" onClick={format}>{t("json.format")}</button>}
       </div>
       <textarea readOnly={readOnly} className={error ? "input input--error code-input" : "input code-input"} rows={rows} value={value} onChange={(event) => onChange(event.target.value)} />
       {hint && <span className="field-hint">{hint}</span>}

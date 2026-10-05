@@ -1,7 +1,8 @@
 """Opt-in MySQL 8 integration coverage for the durable queue.
 
-Run only against a disposable database whose name ends in `_test` after
-`alembic upgrade head`; the test deliberately does not create tables itself.
+Run against an already-migrated, idle test database. Names ending in `_test`
+are accepted by default; another name requires explicit confirmation via
+RELAYVIA_MYSQL_TEST_DATABASE. The tests never create or drop tables.
 """
 
 from __future__ import annotations
@@ -18,8 +19,9 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
+from app.core.config import Settings
 from app.domain.execution.models import ExecutionTask
-from app.domain.execution.state_machine import ExecutionTaskStatus
+from app.domain.execution.state_machine import EXECUTION_TASK_TERMINAL, ExecutionTaskStatus
 from app.domain.runs.models import NodeRun, WorkflowRun
 from app.domain.runs.service import cancel_run
 from app.domain.workflows.graph import empty_workflow_graph
@@ -33,17 +35,50 @@ EMPTY_GRAPH = empty_workflow_graph().model_dump(mode="json")
 
 
 MYSQL_TEST_URL = os.getenv("RELAYVIA_MYSQL_TEST_URL")
+CONFIRMED_TEST_DATABASE = os.getenv("RELAYVIA_MYSQL_TEST_DATABASE")
+if not MYSQL_TEST_URL and CONFIRMED_TEST_DATABASE:
+    MYSQL_TEST_URL = Settings().database_url
 pytestmark = [
     pytest.mark.mysql,
     pytest.mark.skipif(not MYSQL_TEST_URL, reason="set RELAYVIA_MYSQL_TEST_URL to run MySQL 8 integration tests"),
 ]
 
 
-def test_mysql_8_claim_uses_migrated_schema_and_fences_one_owner():
-    url = make_url(MYSQL_TEST_URL)
-    if not (url.database or "").endswith("_test"):
-        pytest.fail("RELAYVIA_MYSQL_TEST_URL must target a disposable database ending in '_test'")
-    engine = create_engine(MYSQL_TEST_URL)
+def validate_test_database(raw_url: str, confirmed_database: str | None):
+    url = make_url(raw_url)
+    if url.get_backend_name() != "mysql" or not url.database:
+        raise ValueError("MySQL integration tests require a named MySQL database")
+    if confirmed_database is not None:
+        if confirmed_database != url.database:
+            raise ValueError("RELAYVIA_MYSQL_TEST_DATABASE must match the target database exactly")
+    elif not url.database.endswith("_test"):
+        raise ValueError("Use a database ending in '_test' or explicitly set RELAYVIA_MYSQL_TEST_DATABASE")
+    return url
+
+
+@pytest.fixture()
+def mysql_engine():
+    url = validate_test_database(MYSQL_TEST_URL, CONFIRMED_TEST_DATABASE)
+    engine = create_engine(url, pool_size=8, max_overflow=0)
+    try:
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            # Claim/recovery scan the whole queue. Never consume pre-existing
+            # tasks, even when the database name has been explicitly confirmed.
+            existing_task = connection.execute(
+                select(ExecutionTask.id).where(
+                    ExecutionTask.status.not_in([status.value for status in EXECUTION_TASK_TERMINAL])
+                ).limit(1)
+            ).first()
+            if existing_task is not None:
+                pytest.fail("MySQL queue tests require no pre-existing nonterminal tasks; stop Workers/Runners and drain the queue")
+        yield engine
+    finally:
+        engine.dispose()
+
+
+def test_mysql_8_claim_uses_migrated_schema_and_fences_one_owner(mysql_engine):
+    engine = mysql_engine
     factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     suffix = uuid.uuid4().hex[:12]
     workflow_id = version_id = run_id = node_id = task_id = None
@@ -86,19 +121,15 @@ def test_mysql_8_claim_uses_migrated_schema_and_fences_one_owner():
                     db.query(WorkflowVersion).filter(WorkflowVersion.id == version_id).delete()
                 db.query(Workflow).filter(Workflow.id == workflow_id).delete()
                 db.commit()
-        engine.dispose()
 
 
-def test_mysql_8_concurrent_claims_cancel_race_and_lease_recovery():
+def test_mysql_8_concurrent_claims_cancel_race_and_lease_recovery(mysql_engine):
     """Exercise the queue with independent real MySQL connections.
 
     This intentionally covers behavior SQLite cannot model: concurrent row
     locks, SKIP LOCKED polling, cancellation lock ordering and expired leases.
     """
-    url = make_url(MYSQL_TEST_URL)
-    if not (url.database or "").endswith("_test"):
-        pytest.fail("RELAYVIA_MYSQL_TEST_URL must target a disposable database ending in '_test'")
-    engine = create_engine(MYSQL_TEST_URL, pool_size=8, max_overflow=0)
+    engine = mysql_engine
     factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     ids: dict[str, object] = {"tasks": [], "nodes": []}
     try:
@@ -153,6 +184,10 @@ def test_mysql_8_concurrent_claims_cancel_race_and_lease_recovery():
         assert asyncio.run(backend.recover_expired()) == 1
         recovered = claim_until_owned("mysql-worker-recovery")
         assert recovered is not None and recovered.id == first.id
+        assert recovered.lease_token != first.lease_token
+        assert not asyncio.run(backend.renew_lease(first.id, first.locked_by, first.lease_token))
+        assert not asyncio.run(backend.start(first.id, first.locked_by, first.lease_token))
+        assert not asyncio.run(backend.complete(first.id, first.locked_by, first.lease_token, {}))
 
         def cancel_parent():
             with factory() as db:
@@ -172,6 +207,11 @@ def test_mysql_8_concurrent_claims_cancel_race_and_lease_recovery():
                 db.get(ExecutionTask, task_id).status == ExecutionTaskStatus.CANCELLED.value
                 for task_id in ids["tasks"]
             )
+            assert all(
+                db.get(NodeRun, node_id).status == NodeRunStatus.CANCELLED.value
+                for node_id in ids["nodes"]
+            )
+        assert not asyncio.run(backend.start(recovered.id, recovered.locked_by, recovered.lease_token))
 
     finally:
         if ids.get("workflow"):
@@ -182,4 +222,3 @@ def test_mysql_8_concurrent_claims_cancel_race_and_lease_recovery():
                 db.query(WorkflowVersion).filter(WorkflowVersion.id == ids["version"]).delete()
                 db.query(Workflow).filter(Workflow.id == ids["workflow"]).delete()
                 db.commit()
-        engine.dispose()

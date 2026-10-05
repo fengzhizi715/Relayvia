@@ -1,6 +1,7 @@
 import { useReactFlow } from "@xyflow/react";
 
 import type { ValidationIssue } from "../../api/client";
+import { useTranslation } from "../../i18n";
 import { useWorkflowBuilderStore } from "../store/workflowBuilderStore";
 
 type ValidationPanelProps = {
@@ -12,6 +13,7 @@ type ValidationPanelProps = {
  * focus the node, edge issues select the edge and fit its endpoints.
  */
 export function ValidationPanel({ onClose }: ValidationPanelProps) {
+  const { t } = useTranslation();
   const validation = useWorkflowBuilderStore((state) => state.validation);
   const validationStale = useWorkflowBuilderStore((state) => state.validationStale);
   const graph = useWorkflowBuilderStore((state) => state.graph);
@@ -39,33 +41,39 @@ export function ValidationPanel({ onClose }: ValidationPanelProps) {
     }
   }
 
+  function location(issue: ValidationIssue): string {
+    if (issue.node_id) return t("validation.locationNode", { id: issue.node_id });
+    if (issue.edge_id) return t("validation.locationEdge", { id: issue.edge_id });
+    return t("validation.locationWorkflow");
+  }
+
   return (
-    <section className="validation-panel" aria-label="Workflow validation results">
+    <section className="validation-panel" aria-label={t("validation.aria")}>
       <div className="validation-panel-header">
         <div>
-          <p className="eyebrow">VALIDATION</p>
+          <p className="eyebrow">{t("validation.eyebrow")}</p>
           <h4>
-            {validation.valid ? "Valid" : "Invalid"}
+            {validation.valid ? t("validation.valid") : t("validation.invalid")}
             <span className="validation-panel-counts">
-              {errors.length} error{errors.length === 1 ? "" : "s"} · {warnings.length} warning{warnings.length === 1 ? "" : "s"}
+              {t(errors.length === 1 ? "toolbar.errorOne" : "toolbar.errorMany", { count: errors.length })} · {t(warnings.length === 1 ? "toolbar.warningOne" : "toolbar.warningMany", { count: warnings.length })}
             </span>
           </h4>
         </div>
-        <button className="icon-button" type="button" aria-label="Close validation panel" onClick={onClose}>
+        <button className="icon-button" type="button" aria-label={t("validation.close")} onClick={onClose}>
           ×
         </button>
       </div>
-      {validationStale && <div className="validation-stale">Graph changed since this validation. Re-run Validate.</div>}
+      {validationStale && <div className="validation-stale">{t("validation.stale")}</div>}
       <div className="validation-groups">
         {errors.length > 0 && (
           <div className="validation-group">
-            <span className="validation-group-label validation-group-label--error">Errors</span>
+            <span className="validation-group-label validation-group-label--error">{t("validation.errors")}</span>
             {errors.map((issue) => (
               <button className="validation-row validation-row--error" key={`${issue.code}-${issue.node_id}-${issue.field}`} type="button" onClick={() => focus(issue)}>
                 <span className="validation-row-dot" aria-hidden="true" />
                 <span className="validation-row-copy">
                   <span className="validation-row-message">{issue.message}</span>
-                  <span className="validation-row-location">{issue.node_id ? `Node ${issue.node_id}` : issue.edge_id ? `Edge ${issue.edge_id}` : "Workflow-level"}</span>
+                  <span className="validation-row-location">{location(issue)}</span>
                 </span>
               </button>
             ))}
@@ -73,20 +81,20 @@ export function ValidationPanel({ onClose }: ValidationPanelProps) {
         )}
         {warnings.length > 0 && (
           <div className="validation-group">
-            <span className="validation-group-label">Warnings</span>
+            <span className="validation-group-label">{t("validation.warnings")}</span>
             {warnings.map((issue) => (
               <button className="validation-row validation-row--warning" key={`${issue.code}-${issue.node_id}-${issue.field}`} type="button" onClick={() => focus(issue)}>
                 <span className="validation-row-dot" aria-hidden="true" />
                 <span className="validation-row-copy">
                   <span className="validation-row-message">{issue.message}</span>
-                  <span className="validation-row-location">{issue.node_id ? `Node ${issue.node_id}` : issue.edge_id ? `Edge ${issue.edge_id}` : "Workflow-level"}</span>
+                  <span className="validation-row-location">{location(issue)}</span>
                 </span>
               </button>
             ))}
           </div>
         )}
         {errors.length === 0 && warnings.length === 0 && (
-          <div className="validation-clean">Workflow passes full validation. Warnings and errors are shown here when present.</div>
+          <div className="validation-clean">{t("validation.clean")}</div>
         )}
       </div>
     </section>

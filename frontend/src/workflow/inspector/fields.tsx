@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { useTranslation } from "../../i18n";
 import type { NodeIssue } from "../validation/localValidation";
 
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
@@ -99,6 +100,7 @@ type JsonConfigFieldProps = {
 };
 
 export function JsonConfigField({ label, value, onChange, rows = 6, disabled, hint }: JsonConfigFieldProps) {
+  const { t } = useTranslation();
   const [text, setText] = useState(() => JSON.stringify(value, null, 2));
   const [error, setError] = useState<string | null>(null);
 
@@ -114,7 +116,7 @@ export function JsonConfigField({ label, value, onChange, rows = 6, disabled, hi
       setError(null);
       onChange(parsed as Record<string, unknown>);
     } catch {
-      setError("Enter valid JSON before saving.");
+      setError(t("fields.invalidJsonObject"));
     }
   }
 
@@ -138,12 +140,13 @@ export function JsonConfigField({ label, value, onChange, rows = 6, disabled, hi
 }
 
 export function IssueList({ issues }: { issues: NodeIssue[] }) {
+  const { t } = useTranslation();
   if (issues.length === 0) return null;
   return (
     <div className="inspector-issues">
       {issues.map((issue) => (
         <div key={issue.code} className={`inspector-issue inspector-issue--${issue.level}`}>
-          {issue.message}
+          {t(issue.messageKey, issue.messageParams)}
         </div>
       ))}
     </div>

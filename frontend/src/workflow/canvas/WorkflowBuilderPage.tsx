@@ -13,6 +13,7 @@ import {
   type ValidationResult,
 } from "../../api/client";
 import { Modal } from "../../components/Modal";
+import { useTranslation } from "../../i18n";
 import { NodeInspector } from "../inspector/NodeInspector";
 import { useAgents, useServiceActionsForServices, useServices } from "../registry/useRegistry";
 import { useWorkflowBuilderStore } from "../store/workflowBuilderStore";
@@ -37,6 +38,7 @@ type WorkflowBuilderPageProps = {
 };
 
 export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBuilderPageProps) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const readOnly = version !== undefined;
 
@@ -128,7 +130,7 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
       void queryClient.invalidateQueries({ queryKey: ["workflow-graph", workflowId] });
       void queryClient.invalidateQueries({ queryKey: ["workflows"] });
     },
-    onError: (value) => setSaveError(value instanceof ApiError ? `${value.message} (${value.code})` : "Draft save failed"),
+    onError: (value) => setSaveError(value instanceof ApiError ? `${value.message} (${value.code})` : t("builder.saveFailed")),
   });
 
   const save = useCallback(() => {
@@ -147,7 +149,7 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
     mutationFn: () => validateWorkflow(workflowId, graph ?? undefined),
     onSuccess: (result) => setValidation(result, new Date().toISOString()),
     onSettled: () => setValidating(false),
-    onError: (value) => setNotice(value instanceof ApiError ? `Validation failed: ${value.message}` : "Validation failed"),
+    onError: (value) => setNotice(value instanceof ApiError ? t("builder.validationFailedWith", { message: value.message }) : t("builder.validationFailed")),
   });
 
   function onValidate() {
@@ -172,7 +174,7 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
     },
     onSuccess: (created) => {
       setVersionModal(false);
-      setNotice(`Created Workflow Version v${created.version}.`);
+      setNotice(t("workflows.versionCreated", { version: created.version }));
       void queryClient.invalidateQueries({ queryKey: ["workflows"] });
       void queryClient.invalidateQueries({ queryKey: ["workflow-versions", workflowId] });
     },
@@ -180,16 +182,16 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
       if (value instanceof ValidationBlockedError) {
         setValidation(value.result, new Date().toISOString());
         setValidationPanelOpen(true);
-        setNotice("Fix validation errors before creating a Version.");
+        setNotice(t("builder.fixValidation"));
       } else {
-        setNotice(value instanceof ApiError ? `${value.message} (${value.code})` : "Version creation failed");
+        setNotice(value instanceof ApiError ? `${value.message} (${value.code})` : t("workflows.versionCreateFailed"));
       }
     },
   });
 
   function onCreateVersion() {
     if (!canSave) {
-      setNotice(blockingErrors.length ? "Fix validation errors before creating a version." : "Unable to create version.");
+      setNotice(blockingErrors.length ? t("builder.fixValidationShort") : t("builder.unableToCreateVersion"));
       return;
     }
     setVersionModal(true);
@@ -197,8 +199,8 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
 
   const confirmLeave = useCallback((): boolean => {
     if (readOnly || !isDirty) return true;
-    return window.confirm("You have unsaved changes. Leave the Builder anyway?");
-  }, [readOnly, isDirty]);
+    return window.confirm(t("builder.confirmLeave"));
+  }, [readOnly, isDirty, t]);
 
   function handleBack() {
     if (confirmLeave()) onBack();
@@ -226,8 +228,8 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
     (readOnly ? versionQuery.isError : graphQuery.isError) ||
     (!graphData && !loading);
 
-  if (failed) return <div className="inline-error">Unable to load this Workflow. Start the FastAPI backend and retry.</div>;
-  if (loading) return <div className="loading-state">Loading Workflow...</div>;
+  if (failed) return <div className="inline-error">{t("builder.loadError")}</div>;
+  if (loading) return <div className="loading-state">{t("builder.loading")}</div>;
 
   const warnings = readOnly ? [] : graphQuery.data?.warnings ?? [];
 
@@ -240,16 +242,16 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
           onCreateVersion={onCreateVersion}
           onValidate={onValidate}
           canSave={canSave}
-          blockedReasons={blockingErrors.map((issue) => issue.message)}
+          blockedReasons={blockingErrors.map((issue) => t(issue.messageKey, issue.messageParams))}
         />
         {notice && (
           <button className="notice" type="button" onClick={() => setNotice(null)}>
-            {notice} · dismiss
+            {notice} · {t("common.dismiss")}
           </button>
         )}
         {!readOnly && warnings.length > 0 && !dismissedWarnings && (
           <button className="notice notice--warning" type="button" onClick={() => setDismissedWarnings(true)}>
-            {warnings.map((warning) => warning.message).join(" · ")} · dismiss
+            {warnings.map((warning) => warning.message).join(" · ")} · {t("common.dismiss")}
           </button>
         )}
         {!readOnly && validationPanelOpen && <ValidationPanel onClose={() => setValidationPanelOpen(false)} />}
@@ -261,7 +263,7 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
           </aside>
         </div>
         {versionModal && !readOnly && (
-          <Modal title="Create Workflow Version" eyebrow="IMMUTABLE SNAPSHOT" onClose={() => setVersionModal(false)}>
+          <Modal title={t("builder.createVersionTitle")} eyebrow={t("builder.immutableSnapshot")} onClose={() => setVersionModal(false)}>
             <form
               className="form-stack"
               onSubmit={(event) => {
@@ -270,15 +272,15 @@ export function WorkflowBuilderPage({ workflowId, version, onBack }: WorkflowBui
               }}
             >
               <label className="field">
-                <span>Change note</span>
-                <textarea className="input" rows={3} value={changeNote} onChange={(event) => setChangeNote(event.target.value)} placeholder="What changed in this version" />
+                <span>{t("builder.changeNote")}</span>
+                <textarea className="input" rows={3} value={changeNote} onChange={(event) => setChangeNote(event.target.value)} placeholder={t("builder.changeNotePlaceholder")} />
               </label>
               <div className="modal-actions">
                 <button className="button" type="button" onClick={() => setVersionModal(false)}>
-                  Cancel
+                  {t("common.cancel")}
                 </button>
                 <button className="button button--primary" type="submit" disabled={versionMutation.isPending}>
-                  {versionMutation.isPending ? "Creating..." : "Create Version"}
+                  {versionMutation.isPending ? t("workflows.creating") : t("workflows.createVersion")}
                 </button>
               </div>
             </form>

@@ -1,22 +1,24 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 
+import { useTranslation } from "../../i18n";
 import { BaseWorkflowNode, useResolvedWorkflowNode } from "./BaseWorkflowNode";
 import type { WorkflowReactFlowNodeData } from "../adapters/graphToReactFlow";
 
 export function ConditionNode({ id, data }: NodeProps<Node<WorkflowReactFlowNodeData>>) {
+  const { t } = useTranslation();
   const node = useResolvedWorkflowNode(id, data);
   if (!node) return null;
 
   const expression = node.config.expression as Record<string, unknown> | undefined;
   const summary = expression
     ? `${String(expression.left ?? "")} ${String(expression.operator ?? "")} ${String(expression.right ?? "")}`
-    : "Not configured";
+    : t("node.notConfigured");
 
   return (
     <div className="workflow-node-root">
       <BaseWorkflowNode
         node={node}
-        category="Condition"
+        category={t("palette.condition.label")}
         glyph="IF"
         summary={<span className="workflow-node-summary-line workflow-node-summary-mono">{summary}</span>}
       />

@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { useTranslation } from "../../i18n";
 import { useWorkflowBuilderStore } from "../store/workflowBuilderStore";
 
 type ContextReferenceInputProps = {
@@ -17,16 +18,17 @@ type ReferenceOption = { label: string; insert: string };
  * validation.
  */
 export function ContextReferenceInput({ value, onChange, placeholder, disabled }: ContextReferenceInputProps) {
+  const { t } = useTranslation();
   const graph = useWorkflowBuilderStore((state) => state.graph);
   const [open, setOpen] = useState(false);
 
   const options: ReferenceOption[] = [];
-  options.push({ label: "Workflow input", insert: "{{workflow.input." });
+  options.push({ label: t("contextRef.workflowInput"), insert: "{{workflow.input." });
   for (const name of Object.keys(graph?.variables ?? {})) {
-    options.push({ label: `Variable · ${name}`, insert: `{{workflow.variables.${name}}}` });
+    options.push({ label: t("contextRef.variable", { name }), insert: `{{workflow.variables.${name}}}` });
   }
   for (const node of graph?.nodes ?? []) {
-    options.push({ label: `Node · ${node.name}`, insert: `{{nodes.${node.id}.output.` });
+    options.push({ label: t("contextRef.node", { name: node.name }), insert: `{{nodes.${node.id}.output.` });
   }
 
   function insert(option: ReferenceOption) {
@@ -47,14 +49,14 @@ export function ContextReferenceInput({ value, onChange, placeholder, disabled }
         />
         {!disabled && (
           <button className="button button--small" type="button" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
-            Insert reference
+            {t("contextRef.insert")}
           </button>
         )}
       </div>
       {open && !disabled && (
-        <div className="reference-menu" role="listbox" aria-label="Insert reference">
+        <div className="reference-menu" role="listbox" aria-label={t("contextRef.insert")}>
           {options.length === 0 ? (
-            <span className="reference-menu-empty">No references available</span>
+            <span className="reference-menu-empty">{t("contextRef.empty")}</span>
           ) : (
             options.map((option) => (
               <button className="reference-menu-item" key={option.label} type="button" role="option" onClick={() => insert(option)}>

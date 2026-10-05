@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { useTranslation } from "../../i18n";
 import { ContextReferenceInput } from "./ContextReferenceInput";
 
 type InputMappingEditorProps = {
@@ -14,13 +15,14 @@ type InputMappingEditorProps = {
  * mapping-style configs (transform mappings, output_mapping).
  */
 export function InputMappingEditor({ mapping, onChange, disabled, hint }: InputMappingEditorProps) {
+  const { t } = useTranslation();
   const [error, setError] = useState<string | null>(null);
   const entries = Object.entries(mapping);
 
   function setKey(oldKey: string, newKey: string) {
     if (!newKey.trim()) return;
     if (newKey !== oldKey && Object.prototype.hasOwnProperty.call(mapping, newKey)) {
-      setError(`Key "${newKey}" already exists.`);
+      setError(t("mapping.keyExists", { key: newKey }));
       return;
     }
     setError(null);
@@ -49,21 +51,21 @@ export function InputMappingEditor({ mapping, onChange, disabled, hint }: InputM
   return (
     <div className="mapping-editor">
       {entries.length === 0 ? (
-        <span className="field-hint">No mappings yet.</span>
+        <span className="field-hint">{t("mapping.noMappings")}</span>
       ) : (
         <div className="mapping-rows">
           {entries.map(([key, value]) => (
             <div className="mapping-row" key={key}>
               <input
                 className="input mapping-key"
-                aria-label="Mapping key"
+                aria-label={t("mapping.keyAria")}
                 value={key}
                 disabled={disabled}
                 onChange={(event) => setKey(key, event.target.value)}
               />
               <ContextReferenceInput value={typeof value === "string" ? value : JSON.stringify(value)} onChange={(value) => setValue(key, value)} disabled={disabled} />
               {!disabled && (
-                <button className="icon-button icon-button--danger" type="button" aria-label={`Remove mapping ${key}`} onClick={() => remove(key)}>
+                <button className="icon-button icon-button--danger" type="button" aria-label={t("mapping.removeAria", { key })} onClick={() => remove(key)}>
                   ×
                 </button>
               )}
@@ -73,7 +75,7 @@ export function InputMappingEditor({ mapping, onChange, disabled, hint }: InputM
       )}
       {!disabled && (
         <button className="text-button" type="button" onClick={add}>
-          + Add mapping
+          {t("mapping.add")}
         </button>
       )}
       {hint && <span className="field-hint">{hint}</span>}

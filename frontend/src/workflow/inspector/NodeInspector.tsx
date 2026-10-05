@@ -1,4 +1,5 @@
 import type { WorkflowNode } from "../../api/client";
+import { useTranslation, type Translator } from "../../i18n";
 import { findPaletteItem } from "../factories/nodeFactory";
 import { useWorkflowBuilderStore, useWorkflowEdge, useWorkflowNode } from "../store/workflowBuilderStore";
 import { AgentInspector } from "./AgentInspector";
@@ -11,8 +12,9 @@ import { ServiceInspector } from "./ServiceInspector";
 import { ToolInspector } from "./ToolInspector";
 import { useNodeIssueList } from "./useNodeIssueList";
 
-function nodeCategoryLabel(node: WorkflowNode): string {
-  return findPaletteItem(node.type, node.subtype)?.label ?? node.type;
+function nodeCategoryLabel(node: WorkflowNode, t: Translator): string {
+  const item = findPaletteItem(node.type, node.subtype);
+  return item ? t(item.labelKey) : node.type;
 }
 
 function InspectorByType({ node }: { node: WorkflowNode }) {
@@ -35,6 +37,7 @@ function InspectorByType({ node }: { node: WorkflowNode }) {
 }
 
 function NodeConfigInspector({ node }: { node: WorkflowNode }) {
+  const { t } = useTranslation();
   const readOnly = useWorkflowBuilderStore((state) => state.readOnly);
   const graph = useWorkflowBuilderStore((state) => state.graph);
   const removeNode = useWorkflowBuilderStore((state) => state.removeNode);
@@ -43,7 +46,10 @@ function NodeConfigInspector({ node }: { node: WorkflowNode }) {
   const edgeCount = graph?.edges.filter((edge) => edge.source === node.id || edge.target === node.id).length ?? 0;
 
   function onDelete() {
-    if (edgeCount > 0 && !window.confirm(`Deleting this node will also remove ${edgeCount} connection${edgeCount === 1 ? "" : "s"}.`)) return;
+    const confirmMessage = edgeCount === 1
+      ? t("nodeInspector.deleteConfirmOne", { count: edgeCount })
+      : t("nodeInspector.deleteConfirmMany", { count: edgeCount });
+    if (edgeCount > 0 && !window.confirm(confirmMessage)) return;
     removeNode(node.id);
   }
 
@@ -51,11 +57,11 @@ function NodeConfigInspector({ node }: { node: WorkflowNode }) {
     <div className="inspector-content">
       <div className="inspector-header">
         <div>
-          <p className="eyebrow">NODE INSPECTOR</p>
-          <h4>{nodeCategoryLabel(node)}</h4>
+          <p className="eyebrow">{t("nodeInspector.eyebrow")}</p>
+          <h4>{nodeCategoryLabel(node, t)}</h4>
         </div>
         {!readOnly && (
-          <button className="icon-button icon-button--danger" type="button" aria-label={`Delete node ${node.name}`} onClick={onDelete}>
+          <button className="icon-button icon-button--danger" type="button" aria-label={t("nodeInspector.deleteAria", { name: node.name })} onClick={onDelete}>
             ×
           </button>
         )}
@@ -65,7 +71,7 @@ function NodeConfigInspector({ node }: { node: WorkflowNode }) {
         <InspectorByType node={node} />
       </div>
       <div className="inspector-advanced">
-        <span className="detail-label">Node ID</span>
+        <span className="detail-label">{t("nodeInspector.nodeId")}</span>
         <code>{node.id}</code>
       </div>
     </div>
@@ -73,6 +79,7 @@ function NodeConfigInspector({ node }: { node: WorkflowNode }) {
 }
 
 export function NodeInspector() {
+  const { t } = useTranslation();
   const selectedNodeId = useWorkflowBuilderStore((state) => state.selectedNodeId);
   const selectedEdgeId = useWorkflowBuilderStore((state) => state.selectedEdgeId);
   const node = useWorkflowNode(selectedNodeId ?? "");
@@ -84,9 +91,9 @@ export function NodeInspector() {
   return (
     <div className="inspector-content">
       <div className="inspector-empty">
-        <p className="eyebrow">INSPECTOR</p>
-        <h4>Nothing selected</h4>
-        <p>Select a Node or an Edge on the canvas to configure it.</p>
+        <p className="eyebrow">{t("nodeInspector.inspectorEyebrow")}</p>
+        <h4>{t("nodeInspector.nothingSelected")}</h4>
+        <p>{t("nodeInspector.selectHint")}</p>
       </div>
     </div>
   );

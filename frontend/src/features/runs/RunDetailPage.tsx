@@ -15,6 +15,7 @@ import {
   type NodeRun,
   type WorkflowRun,
 } from "../../api/client";
+import { useTranslation } from "../../i18n";
 import { NodeRunInspector } from "./NodeRunInspector";
 import { RunControls } from "./RunControls";
 import { RunGraph } from "./RunGraph";
@@ -27,28 +28,29 @@ type RunDetailPageProps = {
 };
 
 function ExecutionTasksSection({ runId }: { runId: string }) {
+  const { t, tStatus, locale } = useTranslation();
   const tasks = useQuery({ queryKey: ["execution-tasks", runId], queryFn: () => getRunExecutionTasks(runId) });
-  if (tasks.isLoading) return <div className="loading-state">Loading execution tasks...</div>;
+  if (tasks.isLoading) return <div className="loading-state">{t("runDetail.loadingTasks")}</div>;
   const list = tasks.data ?? [];
   if (list.length === 0) return null;
   const waitingForWorker = list.some((task) => task.status === "pending" && task.started_at === null);
   return (
     <div className="actions-section">
       <div className="section-heading">
-        <div><p className="eyebrow">EXECUTION QUEUE</p><h4>Execution tasks · read only</h4></div>
+        <div><p className="eyebrow">{t("runDetail.executionQueue")}</p><h4>{t("runDetail.executionTasks")}</h4></div>
       </div>
-      {waitingForWorker && <div className="detail-warning">Waiting for worker — start one with ./run-worker.sh</div>}
+      {waitingForWorker && <div className="detail-warning">{t("runDetail.waitingForWorker")}</div>}
       <div className="action-list">
         {list.map((task: ExecutionTask) => (
           <div className="action-row" key={task.id}>
             <span className="method-pill">{task.attempt}/{task.max_attempts}</span>
             <div className="action-copy">
-              <strong>{task.status.toUpperCase()}</strong>
-              <span>node {String(task.payload.node_id ?? "")} · worker {task.locked_by ?? "—"}</span>
+              <strong>{tStatus(task.status)}</strong>
+              <span>{t("runDetail.node", { node: String(task.payload.node_id ?? ""), worker: task.locked_by ?? "—" })}</span>
             </div>
             <span className="action-copy">
-              <small>available {new Date(task.available_at).toLocaleString()}</small>
-              <small>{task.last_error ? `error: ${String(task.last_error.code)}` : ""}</small>
+              <small>{t("runDetail.available", { time: new Date(task.available_at).toLocaleString(locale) })}</small>
+              <small>{task.last_error ? t("runDetail.errorLabel", { code: String(task.last_error.code) }) : ""}</small>
             </span>
           </div>
         ))}
@@ -58,6 +60,7 @@ function ExecutionTasksSection({ runId }: { runId: string }) {
 }
 
 function RunTimeline({ runId }: { runId: string }) {
+  const { t, locale } = useTranslation();
   const pageSize = 200;
   const events = useInfiniteQuery({
     queryKey: ["run-events", runId],
@@ -66,20 +69,20 @@ function RunTimeline({ runId }: { runId: string }) {
     getNextPageParam: (lastPage) => lastPage.length === pageSize ? lastPage[lastPage.length - 1]?.id : undefined,
     refetchInterval: 4000,
   });
-  if (events.isLoading) return <div className="loading-state">Loading events...</div>;
+  if (events.isLoading) return <div className="loading-state">{t("runDetail.loadingEvents")}</div>;
   const list = events.data?.pages.flat() ?? [];
   return (
     <div className="actions-section">
       <div className="section-heading">
-        <div><p className="eyebrow">EVENT TIMELINE</p><h4>Execution trace</h4></div>
+        <div><p className="eyebrow">{t("runDetail.eventTimeline")}</p><h4>{t("runDetail.executionTrace")}</h4></div>
       </div>
       {list.length === 0 ? (
-        <div className="mini-empty">No trace events yet.</div>
+        <div className="mini-empty">{t("runDetail.noEvents")}</div>
       ) : (
         <div className="action-list">
           {list.map((event) => (
             <div className="action-row" key={event.id}>
-              <span className="method-pill">{new Date(event.created_at).toLocaleTimeString()}</span>
+              <span className="method-pill">{new Date(event.created_at).toLocaleTimeString(locale)}</span>
               <div className="action-copy">
                 <strong>{event.event_type.toUpperCase()}</strong>
                 <span>{event.message ?? ""}</span>
@@ -88,12 +91,13 @@ function RunTimeline({ runId }: { runId: string }) {
           ))}
         </div>
       )}
-      {events.hasNextPage ? <button className="button button--secondary" disabled={events.isFetchingNextPage} onClick={() => void events.fetchNextPage()} type="button">{events.isFetchingNextPage ? "Loading..." : "Load more events"}</button> : null}
+      {events.hasNextPage ? <button className="button button--secondary" disabled={events.isFetchingNextPage} onClick={() => void events.fetchNextPage()} type="button">{events.isFetchingNextPage ? t("common.loading") : t("runDetail.loadMore")}</button> : null}
     </div>
   );
 }
 
 export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
+  const { t, tStatus, locale } = useTranslation();
   const queryClient = useQueryClient();
   const [selectedNodeRunId, setSelectedNodeRunId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -104,8 +108,6 @@ export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
     refetchInterval: 4000,
   });
 
-  // Fetch-backed SSE preserves VITE_API_BASE_URL and Authorization. Durable
-  // event-list polling fills any gap after the connection is re-established.
   useEffect(() => {
     const status = runQuery.data?.status;
     if (status === "completed" || status === "failed" || status === "cancelled") return;
@@ -139,18 +141,18 @@ export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
         case "cancel":
           return cancelWorkflowRun(runId);
         default:
-          return Promise.reject(new Error("Unknown action"));
+          return Promise.reject(new Error(t("runDetail.unknownAction")));
       }
     },
     onSuccess: () => {
       setNotice(null);
       refresh();
     },
-    onError: (value) => setNotice(value instanceof ApiError ? `${value.message} (${value.code})` : "Run action failed"),
+    onError: (value) => setNotice(value instanceof ApiError ? `${value.message} (${value.code})` : t("runDetail.runActionFailed")),
   });
 
-  if (runQuery.isLoading) return <div className="loading-state">Loading Run...</div>;
-  if (runQuery.isError) return <div className="inline-error">Unable to load this Run. Start the FastAPI backend and retry.</div>;
+  if (runQuery.isLoading) return <div className="loading-state">{t("runDetail.loading")}</div>;
+  if (runQuery.isError) return <div className="inline-error">{t("runDetail.loadError")}</div>;
 
   const run = runQuery.data!;
   const nodeRunMap: Record<string, NodeRun> = Object.fromEntries(run.node_runs.map((nodeRun) => [nodeRun.node_id, nodeRun]));
@@ -160,28 +162,28 @@ export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
     <div className="resource-page">
       <div className="page-toolbar">
         <div>
-          <p className="eyebrow">WORKFLOW RUN</p>
-          <h3>Run {run.id.slice(0, 8)}</h3>
+          <p className="eyebrow">{t("runDetail.eyebrow")}</p>
+          <h3>{t("runDetail.title", { id: run.id.slice(0, 8) })}</h3>
           <p className="page-description">
-            {run.workflow_name ?? "Workflow"} · v{run.version} · created {new Date(run.created_at).toLocaleString()}
+            {t("runDetail.meta", { name: run.workflow_name ?? t("runs.workflowFallback"), version: run.version, time: new Date(run.created_at).toLocaleString(locale) })}
           </p>
         </div>
         <div className="detail-actions" style={{ margin: 0 }}>
-          <button className="button button--small" type="button" onClick={onBack}>← Back to Runs</button>
+          <button className="button button--small" type="button" onClick={onBack}>{t("runDetail.back")}</button>
           <WorkflowRunStatusBadge status={run.status} />
         </div>
       </div>
 
-      {notice && <button className="notice notice--error" type="button" onClick={() => setNotice(null)}>{notice} · dismiss</button>}
+      {notice && <button className="notice notice--error" type="button" onClick={() => setNotice(null)}>{notice} · {t("common.dismiss")}</button>}
 
       <section className="detail-card">
         <div className="detail-grid">
-          <div><span className="detail-label">Status</span><strong>{run.status}</strong></div>
-          <div><span className="detail-label">Version</span><strong>v{run.version}</strong></div>
-          <div><span className="detail-label">Started</span><strong>{run.started_at ? new Date(run.started_at).toLocaleString() : "Not started"}</strong></div>
-          <div><span className="detail-label">Duration</span><strong>⏱ {durationText(run.started_at, run.finished_at)}</strong></div>
-          <div><span className="detail-label">Finished</span><strong>{run.finished_at ? new Date(run.finished_at).toLocaleString() : "—"}</strong></div>
-          <div><span className="detail-label">Waiting</span><strong>{run.waiting_reason ?? "—"}</strong></div>
+          <div><span className="detail-label">{t("runDetail.status")}</span><strong>{tStatus(run.status)}</strong></div>
+          <div><span className="detail-label">{t("runDetail.version")}</span><strong>v{run.version}</strong></div>
+          <div><span className="detail-label">{t("runDetail.started")}</span><strong>{run.started_at ? new Date(run.started_at).toLocaleString(locale) : t("common.notStarted")}</strong></div>
+          <div><span className="detail-label">{t("runDetail.duration")}</span><strong>⏱ {durationText(run.started_at, run.finished_at, t)}</strong></div>
+          <div><span className="detail-label">{t("runDetail.finished")}</span><strong>{run.finished_at ? new Date(run.finished_at).toLocaleString(locale) : "—"}</strong></div>
+          <div><span className="detail-label">{t("runDetail.waiting")}</span><strong>{run.waiting_reason ?? "—"}</strong></div>
         </div>
         <RunControls
           status={run.status}
@@ -195,14 +197,14 @@ export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
 
       <div className="graph-debug">
         <div className="section-heading">
-          <div><p className="eyebrow">RUNTIME GRAPH</p><h4>Graph Snapshot · read only</h4></div>
+          <div><p className="eyebrow">{t("runDetail.graphEyebrow")}</p><h4>{t("runDetail.graphTitle")}</h4></div>
         </div>
         <RunGraph graph={run.graph_snapshot} nodeRuns={nodeRunMap} />
       </div>
 
       <div className="actions-section">
         <div className="section-heading">
-          <div><p className="eyebrow">NODE RUNS</p><h4>Execution instances</h4></div>
+          <div><p className="eyebrow">{t("runDetail.nodeRunsEyebrow")}</p><h4>{t("runDetail.nodeRunsTitle")}</h4></div>
         </div>
         <div className="resource-layout">
           <div className="resource-list">
@@ -221,7 +223,7 @@ export function RunDetailPage({ runId, onBack }: RunDetailPageProps) {
               </button>
             ))}
           </div>
-          {selectedNodeRun ? <NodeRunInspector nodeRun={selectedNodeRun} /> : <div className="select-state">Select a Node Run to inspect its runtime state.</div>}
+          {selectedNodeRun ? <NodeRunInspector nodeRun={selectedNodeRun} /> : <div className="select-state">{t("runDetail.selectNodeRun")}</div>}
         </div>
       </div>
 

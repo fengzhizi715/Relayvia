@@ -1,6 +1,7 @@
 import { useReactFlow } from "@xyflow/react";
 
 import { StatusBadge } from "../../components/StatusBadge";
+import { useTranslation } from "../../i18n";
 import { useWorkflowBuilderStore } from "../store/workflowBuilderStore";
 
 type WorkflowToolbarProps = {
@@ -13,6 +14,7 @@ type WorkflowToolbarProps = {
 };
 
 export function WorkflowToolbar({ onBack, onSave, onCreateVersion, onValidate, canSave, blockedReasons }: WorkflowToolbarProps) {
+  const { t, locale } = useTranslation();
   const workflowName = useWorkflowBuilderStore((state) => state.workflowName);
   const readOnly = useWorkflowBuilderStore((state) => state.readOnly);
   const mode = useWorkflowBuilderStore((state) => state.mode);
@@ -29,35 +31,35 @@ export function WorkflowToolbar({ onBack, onSave, onCreateVersion, onValidate, c
   let label: string;
   if (readOnly) {
     tone = "neutral";
-    label = "READ ONLY";
+    label = t("toolbar.readOnly");
   } else if (isSaving) {
     tone = "neutral";
-    label = "Saving...";
+    label = t("common.saving");
   } else if (saveError) {
     tone = "danger";
-    label = "Save failed";
+    label = t("toolbar.saveFailed");
   } else if (isDirty) {
     tone = "warning";
-    label = "Unsaved changes";
+    label = t("toolbar.unsavedChanges");
   } else {
-    label = lastSavedAt ? `Saved ${new Date(lastSavedAt).toLocaleTimeString()}` : "Saved";
+    label = lastSavedAt ? t("toolbar.savedAt", { time: new Date(lastSavedAt).toLocaleTimeString(locale) }) : t("toolbar.saved");
   }
 
   let validationLabel: string | null = null;
   let validationTone: "success" | "warning" | "danger" | "neutral" = "neutral";
   if (isValidating) {
-    validationLabel = "Validating...";
+    validationLabel = t("toolbar.validating");
   } else if (validation) {
     const errors = validation.issues.filter((issue) => issue.severity === "error").length;
     const warnings = validation.issues.filter((issue) => issue.severity === "warning").length;
     if (errors > 0) {
-      validationLabel = `${errors} error${errors === 1 ? "" : "s"}`;
+      validationLabel = t(errors === 1 ? "toolbar.errorOne" : "toolbar.errorMany", { count: errors });
       validationTone = "danger";
     } else if (warnings > 0) {
-      validationLabel = `${warnings} warning${warnings === 1 ? "" : "s"}`;
+      validationLabel = t(warnings === 1 ? "toolbar.warningOne" : "toolbar.warningMany", { count: warnings });
       validationTone = "warning";
     } else {
-      validationLabel = "Valid";
+      validationLabel = t("toolbar.valid");
       validationTone = "success";
     }
   }
@@ -68,10 +70,10 @@ export function WorkflowToolbar({ onBack, onSave, onCreateVersion, onValidate, c
     <header className="builder-toolbar">
       <div className="builder-toolbar-title">
         <button className="text-button builder-back" type="button" onClick={onBack}>
-          ← Back to Workflows
+          {t("toolbar.back")}
         </button>
         <div>
-          <p className="eyebrow">{readOnly ? "WORKFLOW · VERSION" : "WORKFLOW DRAFT"}</p>
+          <p className="eyebrow">{readOnly ? t("toolbar.workflowVersion") : t("toolbar.workflowDraft")}</p>
           <h3>
             {workflowName}
             <span className="builder-toolbar-version">{versionSuffix}</span>
@@ -83,10 +85,10 @@ export function WorkflowToolbar({ onBack, onSave, onCreateVersion, onValidate, c
         {!readOnly && (
           <>
             <button className="button button--small" type="button" onClick={() => fitView()}>
-              Fit view
+              {t("toolbar.fitView")}
             </button>
-            <button className="button button--small" type="button" onClick={onValidate} disabled={isValidating} title={validationStale && validation ? "Graph changed since the last validation" : undefined}>
-              Validate
+            <button className="button button--small" type="button" onClick={onValidate} disabled={isValidating} title={validationStale && validation ? t("toolbar.staleHint") : undefined}>
+              {t("toolbar.validate")}
             </button>
             {validationLabel ? <StatusBadge label={validationLabel} tone={validationTone} /> : null}
             <button
@@ -96,7 +98,7 @@ export function WorkflowToolbar({ onBack, onSave, onCreateVersion, onValidate, c
               disabled={!isDirty || isSaving || !canSave}
               title={blockedReasons.join("\n")}
             >
-              Save Draft
+              {t("workflows.saveDraft")}
             </button>
             <button
               className="button button--small button--primary"
@@ -105,7 +107,7 @@ export function WorkflowToolbar({ onBack, onSave, onCreateVersion, onValidate, c
               disabled={isSaving || !canSave}
               title={blockedReasons.join("\n")}
             >
-              Create Version
+              {t("workflows.createVersion")}
             </button>
           </>
         )}

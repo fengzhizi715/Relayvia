@@ -1,5 +1,6 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 
+import { useTranslation } from "../../i18n";
 import { useAgents } from "../registry/useRegistry";
 import { BaseWorkflowNode, useResolvedWorkflowNode } from "./BaseWorkflowNode";
 import type { WorkflowReactFlowNodeData } from "../adapters/graphToReactFlow";
@@ -10,6 +11,7 @@ function glyph(role: string | undefined) {
 }
 
 export function AgentNode({ id, data }: NodeProps<Node<WorkflowReactFlowNodeData>>) {
+  const { t } = useTranslation();
   const node = useResolvedWorkflowNode(id, data);
   const { agents } = useAgents();
   if (!node) return null;
@@ -17,18 +19,21 @@ export function AgentNode({ id, data }: NodeProps<Node<WorkflowReactFlowNodeData
   const agentId = node.config.agent_id as string | undefined;
   const agent = agents.find((item) => item.id === agentId);
   const completeness = nodeCompletenessErrors(node);
-  const warning = completeness[0]?.message ?? (agentId && !agent ? "Agent not found" : agent && !agent.enabled ? "Agent is disabled" : null);
+  const firstIssue = completeness[0];
+  const warning = firstIssue
+    ? t(firstIssue.messageKey, firstIssue.messageParams)
+    : agentId && !agent ? t("node.agentNotFound") : agent && !agent.enabled ? t("node.agentDisabled") : null;
 
   return (
     <div className="workflow-node-root">
       <BaseWorkflowNode
         node={node}
-        category="Agent"
+        category={t("palette.agent.label")}
         glyph={glyph(node.config.role as string | undefined)}
         warning={warning}
         summary={
           <>
-            <span className="workflow-node-summary-line">{agent ? agent.name : agentId ? "Agent unavailable" : "Not configured"}</span>
+            <span className="workflow-node-summary-line">{agent ? agent.name : agentId ? t("node.agentUnavailable") : t("node.notConfigured")}</span>
             {node.config.role ? <span className="workflow-node-summary-muted">{String(node.config.role)}</span> : null}
           </>
         }

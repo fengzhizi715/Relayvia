@@ -1,9 +1,11 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 
+import { useTranslation } from "../../i18n";
 import { BaseWorkflowNode, useResolvedWorkflowNode } from "./BaseWorkflowNode";
 import type { WorkflowReactFlowNodeData } from "../adapters/graphToReactFlow";
 
 export function MergeNode({ id, data }: NodeProps<Node<WorkflowReactFlowNodeData>>) {
+  const { t } = useTranslation();
   const node = useResolvedWorkflowNode(id, data);
   if (!node) return null;
 
@@ -12,7 +14,7 @@ export function MergeNode({ id, data }: NodeProps<Node<WorkflowReactFlowNodeData
     <div className="workflow-node-root">
       <BaseWorkflowNode
         node={node}
-        category="Merge"
+        category={t("palette.merge.label")}
         glyph="⨝"
         summary={<span className="workflow-node-summary-line workflow-node-summary-mono">{strategy.toUpperCase()}</span>}
       />
