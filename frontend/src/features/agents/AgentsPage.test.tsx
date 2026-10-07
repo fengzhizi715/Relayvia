@@ -55,7 +55,7 @@ describe("AgentsPage", () => {
   it("runs a connection test and confirms deletion", async () => {
     api.getAgents.mockResolvedValue([agent]);
     api.getCredentials.mockResolvedValue([]);
-    api.getRunners.mockResolvedValue([]);
+    api.getRunners.mockResolvedValue({ items: [], total: 0 });
     api.testAgent.mockResolvedValue({ status: "healthy", latency_ms: 10, checked_at: "2026-08-15T00:00:00Z", error_code: null, message: "Connection successful" });
     api.updateAgent.mockResolvedValue({ ...agent, enabled: false });
     api.deleteAgent.mockResolvedValue(undefined);

@@ -1,8 +1,12 @@
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { getWorkspaces, releaseWorkspace, type Workspace } from "../../api/client";
+import { Pagination, usePageClamp } from "../../components/Pagination";
 import { StatusBadge } from "../../components/StatusBadge";
 import { useTranslation } from "../../i18n";
+
+const PAGE_SIZE = 20;
 
 function statusTone(status: Workspace["status"]): "success" | "warning" | "danger" | "neutral" {
   if (status === "ready") return "success";
@@ -14,16 +18,24 @@ function statusTone(status: Workspace["status"]): "success" | "warning" | "dange
 export function WorkspaceListPage() {
   const { t, tStatus, locale } = useTranslation();
   const queryClient = useQueryClient();
-  const workspaces = useQuery({ queryKey: ["workspaces"], queryFn: () => getWorkspaces(), refetchInterval: 5000 });
+  const [page, setPage] = useState(0);
+  const workspaces = useQuery({
+    queryKey: ["workspaces", page],
+    queryFn: () => getWorkspaces(undefined, { limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
+    refetchInterval: 5000,
+  });
   const release = useMutation({
     mutationFn: releaseWorkspace,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["workspaces"] }),
   });
 
+  const list = workspaces.data?.items ?? [];
+  const total = workspaces.data?.total;
+  usePageClamp(page, PAGE_SIZE, total, setPage);
+
   if (workspaces.isLoading) return <div className="loading-state">{t("workspaces.loading")}</div>;
   if (workspaces.isError) return <div className="inline-error">{t("workspaces.loadError")}</div>;
 
-  const list = workspaces.data ?? [];
   return (
     <div className="resource-page">
       <div className="page-toolbar">
@@ -36,6 +48,7 @@ export function WorkspaceListPage() {
       {list.length === 0 ? (
         <div className="empty-state"><div className="empty-icon">W</div><h3>{t("workspaces.emptyTitle")}</h3><p>{t("workspaces.emptyMessage")}</p></div>
       ) : (
+        <>
         <div className="resource-list">
           {list.map((workspace) => {
             const canRelease = workspace.status === "ready" || workspace.status === "failed" || workspace.status === "cleanup_failed";
@@ -70,6 +83,8 @@ export function WorkspaceListPage() {
             );
           })}
         </div>
+        <Pagination page={page} pageSize={PAGE_SIZE} total={total ?? 0} onPageChange={setPage} disabled={workspaces.isFetching} />
+        </>
       )}
       {release.isError ? <div className="inline-error">{t("workspaces.releaseError")}</div> : null}
     </div>

@@ -86,7 +86,7 @@ describe("Runs feature", () => {
   afterEach(() => cleanup());
 
   it("renders the run list and opens a run detail", async () => {
-    api.getRuns.mockResolvedValue([summary]);
+    api.getRuns.mockResolvedValue({ items: [summary], total: 1 });
     const user = userEvent.setup();
     renderUi(<RunsPage />);
     const row = await screen.findByText("Coding Showcase");

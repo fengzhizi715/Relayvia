@@ -12,6 +12,7 @@ from app.domain.workflows.schemas import (
     WorkflowVersionRead,
 )
 from app.domain.workflows.service import (
+    count_workflows,
     create_version,
     create_workflow,
     delete_workflow,
@@ -33,10 +34,14 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 @router.get("", response_model=list[WorkflowRead])
 def get_workflows(
+    response: Response,
     include_archived: bool = Query(default=False),
+    limit: int | None = Query(default=None, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ) -> list[WorkflowRead]:
-    return list_workflows(db, include_archived=include_archived)
+    response.headers["X-Total-Count"] = str(count_workflows(db, include_archived=include_archived))
+    return list_workflows(db, include_archived=include_archived, limit=limit, offset=offset)
 
 
 @router.post("", response_model=WorkflowRead, status_code=status.HTTP_201_CREATED)

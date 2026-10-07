@@ -128,9 +128,9 @@ def drive_worker(factory, scheduler):
 
 def test_codex_build_command():
     command = CodexConnector().build_command(task="implement the API", timeout_seconds=60)
-    assert command.startswith("codex exec --json 'implement the API'")
+    assert command == "codex exec --json --sandbox workspace-write 'implement the API'"
     custom = CodexConnector().build_command(task="hello world", timeout_seconds=60, executable="/tmp/codex-bin")
-    assert custom.startswith("/tmp/codex-bin exec --json 'hello world'")
+    assert custom == "/tmp/codex-bin exec --json --sandbox workspace-write 'hello world'"
 
 
 def test_capability_detection_reports_only_installed_clis(tmp_path):
@@ -151,9 +151,11 @@ def test_coding_agent_end_to_end(client, memory_db, tmp_path, monkeypatch):
 
     _, factory = memory_db
     graph = coding_graph(str(repo), "Implement the feature in generated.txt", fake_codex)
+    graph["nodes"][1]["input_mapping"] = {"task": "{{workflow.input.task}}"}
     scheduler = WorkflowScheduler(default_max_attempts=1)
     with factory() as db:
         run = make_run(db, graph, snapshot_with(fake_codex))
+        run.input_json = {"task": "Implement the feature in generated.txt"}
         run_id = run.id
         scheduler.schedule_ready_nodes(db, run.id)
         db.commit()
@@ -193,6 +195,9 @@ def test_coding_agent_end_to_end(client, memory_db, tmp_path, monkeypatch):
         assert db.get(WorkflowRun, run_id).status == WorkflowRunStatus.COMPLETED.value
         coder_run = db.scalar(select(NodeRun).where(NodeRun.workflow_run_id == run_id, NodeRun.node_id == "coder"))
         assert coder_run.status == NodeRunStatus.COMPLETED.value
+        assert coder_run.input_json == {"task": "Implement the feature in generated.txt"}
+        assert coder_run.attempt == 1
+        assert coder_run.started_at is not None and coder_run.finished_at >= coder_run.started_at
         assert coder_run.output_json["patch"].startswith("artifact://")
         workspace = db.scalar(select(Workspace).where(Workspace.node_run_id == coder_run.id))
         assert workspace.status == "released"

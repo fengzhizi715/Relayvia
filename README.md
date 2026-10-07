@@ -164,6 +164,17 @@ RELAYVIA_MYSQL_TEST_URL=mysql+pymysql://relayvia:relayvia@127.0.0.1:3306/relayvi
   PYTHONPATH=backend .venv/bin/pytest backend/tests/test_mysql_integration.py -q
 ```
 
+如果 `.env` 中的数据库（例如 `relayvia`）本身就是测试环境，也可以显式确认数据库名称，
+直接复用 `.env` 中的 `RELAYVIA_DATABASE_URL`：
+
+```bash
+RELAYVIA_MYSQL_TEST_DATABASE=relayvia PYTHONPATH=backend \
+  .venv/bin/pytest backend/tests/test_mysql_integration.py -q
+```
+
+运行前停止 Worker / Runner，不要同时提交新的 Workflow Run。测试会拒绝存在非终态任务的
+数据库；仅按 ID 清理本次创建的记录，不删除表、不重建数据库。不要对生产数据库使用此入口。
+
 当前提供的 API：
 
 ```text
@@ -197,6 +208,11 @@ POST /api/workflow-runs/{id}/cancel
 GET /api/workflow-runs/{id}/nodes
 GET /api/workflow-runs/{id}/nodes/{node_run_id}
 GET /api/workflow-runs/{id}/execution-tasks
+
+列表端点 `GET /api/workflows`、`GET /api/workflow-runs`、`GET /api/runners`、`GET /api/workspaces`
+支持 `offset` 与可选的 `limit`（最大 200）查询参数；不传 `limit` 时 `/api/workflows`、
+`/api/runners`、`/api/workspaces` 保持原有返回全部的行为，`/api/workflow-runs` 沿用默认 50。
+未分页总数通过 `X-Total-Count` 响应头返回；响应体仍为数组，保持向后兼容。前端对应列表页每页 20 条。
 
 Workflow Graph Contract 文档：[`docs/workflow-graph-contract.md`](docs/workflow-graph-contract.md)
 

@@ -32,6 +32,12 @@ export const zh: Record<TranslationKey, string> = {
   "common.connectionTestFailed": "连接测试失败",
   "common.saveChanges": "保存更改",
 
+  "pagination.label": "分页",
+  "pagination.previous": "上一页",
+  "pagination.next": "下一页",
+  "pagination.pageOf": "第 {page} / {pages} 页",
+  "pagination.range": "{start}–{end}，共 {total} 条",
+
   "app.orchestrationPlatform": "编排平台",
   "app.primaryNavigation": "主导航",
   "app.runtimeReady": "持久化运行时已就绪",

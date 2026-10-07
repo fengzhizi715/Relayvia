@@ -120,11 +120,35 @@ def _to_version_read(version: WorkflowVersion) -> WorkflowVersionRead:
     )
 
 
-def list_workflows(db: Session, *, include_archived: bool = False) -> list[WorkflowRead]:
-    query = select(Workflow).order_by(Workflow.updated_at.desc(), Workflow.name)
+def _workflow_list_query(*, include_archived: bool):
+    query = select(Workflow)
     if not include_archived:
         query = query.where(Workflow.status != WorkflowStatus.ARCHIVED.value)
+    return query
+
+
+def list_workflows(
+    db: Session,
+    *,
+    include_archived: bool = False,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[WorkflowRead]:
+    query = _workflow_list_query(include_archived=include_archived).order_by(
+        Workflow.updated_at.desc(), Workflow.name
+    )
+    if offset:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
     return [_to_read(workflow) for workflow in db.scalars(query).all()]
+
+
+def count_workflows(db: Session, *, include_archived: bool = False) -> int:
+    query = select(func.count()).select_from(Workflow)
+    if not include_archived:
+        query = query.where(Workflow.status != WorkflowStatus.ARCHIVED.value)
+    return int(db.scalar(query) or 0)
 
 
 def get_workflow(db: Session, workflow_id: str) -> WorkflowRead:

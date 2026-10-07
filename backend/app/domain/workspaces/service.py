@@ -8,7 +8,7 @@ result and this service finalizes the record.
 
 from datetime import timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import RelayviaError
@@ -56,11 +56,31 @@ def get_workspace(db: Session, workspace_id: str) -> Workspace:
     return workspace
 
 
-def list_workspaces(db: Session, *, run_id: str | None = None) -> list[Workspace]:
-    query = select(Workspace).order_by(Workspace.created_at)
+def _workspace_filter_query(*, run_id: str | None = None):
+    query = select(Workspace)
     if run_id:
         query = query.where(Workspace.workflow_run_id == run_id)
+    return query
+
+
+def list_workspaces(
+    db: Session,
+    *,
+    run_id: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[Workspace]:
+    query = _workspace_filter_query(run_id=run_id).order_by(Workspace.created_at).offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
     return list(db.scalars(query).all())
+
+
+def count_workspaces(db: Session, *, run_id: str | None = None) -> int:
+    query = select(func.count()).select_from(Workspace)
+    if run_id:
+        query = query.where(Workspace.workflow_run_id == run_id)
+    return int(db.scalar(query) or 0)
 
 
 def finalize_workspace(db: Session, workspace_id: str, *, path: str, branch: str | None, status: WorkspaceStatus) -> Workspace:

@@ -354,7 +354,9 @@ Tool 节点（shell / git / test_command）不再由 Server Worker 或 FastAPI �
   Runner 将其以 `0600` 本地 identity 文件保存。重启后携带 `runner_id` + token
   重新注册；`heartbeat` / `claim` / `submit-result` 均必须带
   `X-Relayvia-Runner-Token`。数据库仅保存 token 的 SHA-256 hash。心跳更新
-  `last_seen_at` 并续约该 Runner 名下 RUNNING 任务的 Lease。OFFLINE 由
+  `last_seen_at`，不批量续约任务 Lease。执行中的任务通过带 `lease_token` 的
+  `/tasks/{task_id}/heartbeat` 单独续租，直到结果提交结束；已结束但提交失败的任务
+  不会仅因 Runner 仍在线而被永久续租。OFFLINE 由
   `last_seen_at` 超过 `RELAYVIA_RUNNER_OFFLINE_SECONDS`（默认 60s）判定。
 - **管理与撤销**：Control Plane 可 Enable/Disable Runner、立即 Revoke 旧 token，或 Rotate
   token（新值只返回一次）。Disable 停止领取新任务但允许 in-flight 完成；Revoke/Rotate
@@ -368,6 +370,12 @@ Tool 节点（shell / git / test_command）不再由 Server Worker 或 FastAPI �
   Capability，避免本地路径被另一台机器领取。
 - **Task 解析**：Backend 在调度时已用 ContextResolver 把 Tool config（command / cwd /
   timeout）解析进 task payload，Runner 不需要 Graph / Context。
+- **Runner Trace**：调度时将节点 `input_mapping` 解析后的值脱敏并持久化到
+  `NodeRun.input_json`；映射为空时 Input 保持 `{}`。依赖尚未就绪时节点保持 PENDING，
+  不创建 Task 或 Workspace。领取成功后，在同一事务中同步 NodeRun 的 `attempt`
+  与 ExecutionTask，并在首次执行时设置 `started_at`。重试、租约过期后重新领取
+  都增加 attempt，但保留节点首次开始时间；`finished_at - started_at` 包含重试等待。
+  这些字段通过现有 Run Trace API 返回，不需要数据库 Migration。
 - **安全**：`RELAYVIA_RUNNER_ROOT` 是必填项；所有命令在其下运行，working directory
   路径逃逸会被拒绝。Runner 不接收 Backend Credential（Secret 不外发）。每个命令使用
   独立进程组，超时时会终止整组子进程；stdout/stderr 截断并对常见 secret 形式脱敏。
@@ -376,6 +384,8 @@ Tool 节点（shell / git / test_command）不再由 Server Worker 或 FastAPI �
   `recover_expired` 回 PENDING → 可被同一目标 Runner 重领（at-least-once）。所有
   submit 都严格检查 lease expiry；retryable 失败按 Task 的 max attempts / backoff
   进入 `RETRY_WAIT`，与 Server Worker 使用同一状态语义。
+  结果提交按 `WorkflowRun -> ExecutionTask -> NodeRun` 顺序加锁；遇到 HTTP 5xx
+  或暂时网络错误，Runner 最多提交三次相同结果与 Artifact Reference，不重新执行命令。
 
 ## Workspace Manager
 

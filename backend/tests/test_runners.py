@@ -90,6 +90,70 @@ def runner_headers(runner):
     return {"X-Relayvia-Runner-Token": runner["enrollment_token"]}
 
 
+def test_runner_trace_persists_resolved_input_and_claim_fields(client, memory_db):
+    _, factory = memory_db
+    graph = tool_graph()
+    graph["nodes"][1]["input_mapping"] = {
+        "task": "{{workflow.input.task}}",
+        "options": "{{workflow.variables.options}}",
+        "patch": "{{nodes.input.output.patch}}",
+        "run_id": "{{run.id}}",
+        "created_at": "{{run.created_at}}",
+        "authorization": "test-secret-value",
+    }
+    scheduler = WorkflowScheduler()
+    with factory() as db:
+        run = make_run(db, graph)
+        run_id = run.id
+        run.input_json = {"task": "Implement feature"}
+        run.variables_json = {"options": {"enabled": True, "count": 2}}
+        source = db.scalar(select(NodeRun).where(NodeRun.workflow_run_id == run_id, NodeRun.node_id == "input"))
+        source.output_json = {"patch": "artifact://test-patch"}
+        assert scheduler.schedule_ready_nodes(db, run_id) == ["t"]
+        db.commit()
+        expected = {"task": "Implement feature", "options": {"enabled": True, "count": 2},
+                    "patch": "artifact://test-patch", "run_id": run_id, "created_at": run.created_at.isoformat(),
+                    "authorization": "***REDACTED***"}
+    queued = next(n for n in client.get(f"/api/workflow-runs/{run_id}").json()["node_runs"] if n["node_id"] == "t")
+    assert queued["input"] == expected
+    assert queued["started_at"] is None and queued["attempt"] == 0
+
+    runner = register_runner(client)
+    claimed = client.post(f"/api/runners/{runner['id']}/claim", headers=runner_headers(runner)).json()
+    with factory() as db:
+        task = db.get(ExecutionTask, claimed["task_id"])
+        node = db.get(NodeRun, task.node_run_id)
+        assert node.attempt == task.attempt == 1
+        assert node.started_at == task.started_at
+        assert node.input_json == expected
+    started = next(n for n in client.get(f"/api/workflow-runs/{run_id}").json()["node_runs"] if n["node_id"] == "t")
+    assert started["attempt"] == 1 and started["started_at"] is not None
+    assert client.post(f"/api/runners/{runner['id']}/claim", headers=runner_headers(runner)).json() is None
+    with factory() as db:
+        assert scheduler.schedule_ready_nodes(db, run_id) == []
+        db.commit()
+    assert next(n for n in client.get(f"/api/workflow-runs/{run_id}").json()["node_runs"] if n["node_id"] == "t") == started
+
+
+def test_runner_unresolved_input_remains_pending_until_available(client, memory_db):
+    _, factory = memory_db
+    graph = tool_graph()
+    graph["nodes"][1]["input_mapping"] = {"task": "{{workflow.input.task}}"}
+    scheduler = WorkflowScheduler()
+    with factory() as db:
+        run = make_run(db, graph)
+        assert scheduler.schedule_ready_nodes(db, run.id) == []
+        db.commit()
+        node = db.scalar(select(NodeRun).where(NodeRun.workflow_run_id == run.id, NodeRun.node_id == "t"))
+        assert node.status == NodeRunStatus.PENDING.value
+        assert db.scalar(select(ExecutionTask).where(ExecutionTask.node_run_id == node.id)) is None
+        assert not client.get(f"/api/workflow-runs/{run.id}/events").json()
+        run.input_json = {"task": "now available"}
+        assert scheduler.schedule_ready_nodes(db, run.id) == ["t"]
+        db.commit()
+        assert node.input_json == {"task": "now available"}
+
+
 def test_register_heartbeat_and_offline_detection(client, memory_db):
     runner = register_runner(client)
     assert runner["status"] == "online"
@@ -242,6 +306,36 @@ def test_runner_result_is_idempotent(client, memory_db):
     assert second.status_code == 409
 
 
+def test_machine_heartbeat_does_not_renew_abandoned_task_lease(client, memory_db):
+    _, factory = memory_db
+    with factory() as db:
+        run = make_run(db, tool_graph())
+        WorkflowScheduler(default_max_attempts=1).schedule_ready_nodes(db, run.id)
+        db.commit()
+    runner = register_runner(client)
+    headers = runner_headers(runner)
+    claimed = client.post(f"/api/runners/{runner['id']}/claim", headers=headers).json()
+    with factory() as db:
+        task = db.get(ExecutionTask, claimed["task_id"])
+        task.lease_expires_at = utc_now() - timedelta(seconds=5)
+        db.commit()
+    heartbeat = client.post(
+        f"/api/runners/{runner['id']}/heartbeat",
+        json={"hostname": "test-host", "capabilities": ["shell"], "metadata": {}}, headers=headers,
+    )
+    assert heartbeat.status_code == 200
+    with factory() as db:
+        expires = db.get(ExecutionTask, claimed["task_id"]).lease_expires_at
+        assert expires < utc_now().replace(tzinfo=None)
+    # Being alive cannot authorize publication of an expired task result.
+    submitted = client.post(
+        f"/api/runners/{runner['id']}/submit-result",
+        json={"task_id": claimed["task_id"], "lease_token": claimed["lease_token"], "result": {"ok": True}},
+        headers=headers,
+    )
+    assert submitted.status_code == 409
+
+
 def test_cancelled_runner_task_is_signalled_and_cannot_publish_result(client, memory_db):
     _, factory = memory_db
     with factory() as db:
@@ -330,6 +424,8 @@ def test_runner_lost_recovers_via_lease(client, memory_db):
     # pending queue.
     with factory() as db:
         task = db.scalar(select(ExecutionTask).where(ExecutionTask.workflow_run_id == run_id))
+        first_started_at = db.get(NodeRun, task.node_run_id).started_at
+        assert first_started_at is not None
         task.lease_expires_at = utc_now() - timedelta(seconds=1)
         db.commit()
     assert client.post(
@@ -350,6 +446,10 @@ def test_runner_lost_recovers_via_lease(client, memory_db):
     runner_b = register_runner(client, name="replacement")
     re_claimed = client.post(f"/api/runners/{runner_b['id']}/claim", headers=runner_headers(runner_b)).json()
     assert re_claimed is not None
+    assert re_claimed["attempt"] == 2
+    with factory() as db:
+        node = db.get(NodeRun, re_claimed["node_run_id"])
+        assert node.attempt == 2 and node.started_at == first_started_at
     assert client.post(
         f"/api/runners/{runner_b['id']}/submit-result",
         json={"task_id": re_claimed["task_id"], "lease_token": re_claimed["lease_token"], "result": {"ok": True, "output": {"stdout": "x"}, "artifacts": [], "metadata": {}, "error": None}},
@@ -362,12 +462,17 @@ def test_runner_failure_uses_durable_retry(client, memory_db):
     with factory() as db:
         graph = tool_graph()
         graph["nodes"][1]["config"]["retry"] = {"max_retries": 1}
+        graph["nodes"][1]["input_mapping"] = {"value": 42}
         run = make_run(db, graph)
         WorkflowScheduler(default_max_attempts=2, default_backoff_seconds=0).schedule_ready_nodes(db, run.id)
         db.commit()
 
     runner = register_runner(client)
     claimed = client.post(f"/api/runners/{runner['id']}/claim", headers=runner_headers(runner)).json()
+    with factory() as db:
+        task = db.get(ExecutionTask, claimed["task_id"])
+        first_started_at = db.get(NodeRun, task.node_run_id).started_at
+        assert first_started_at is not None
     failed = {"ok": False, "output": {}, "artifacts": [], "metadata": {}, "error": {"code": "TEMP", "message": "retry", "retryable": True, "details": {}}}
     assert client.post(
         f"/api/runners/{runner['id']}/submit-result",
@@ -379,9 +484,27 @@ def test_runner_failure_uses_durable_retry(client, memory_db):
         node = db.get(NodeRun, task.node_run_id)
         assert task.status == ExecutionTaskStatus.RETRY_WAIT.value
         assert node.status == NodeRunStatus.RETRYING.value
+        assert node.attempt == 1 and node.started_at == first_started_at
+        assert node.input_json == {"value": 42}
     assert asyncio.run(MySQLExecutionBackend(factory).promote_due_retries()) == 1
     retried = client.post(f"/api/runners/{runner['id']}/claim", headers=runner_headers(runner)).json()
     assert retried is not None and retried["attempt"] == 2
+    with factory() as db:
+        task = db.get(ExecutionTask, retried["task_id"])
+        node = db.get(NodeRun, task.node_run_id)
+        assert node.attempt == 2 and node.started_at == first_started_at
+        assert task.started_at >= first_started_at
+        assert node.input_json == {"value": 42}
+    succeeded = {"ok": True, "output": {"stdout": "done"}, "artifacts": [], "metadata": {}, "error": None}
+    assert client.post(
+        f"/api/runners/{runner['id']}/submit-result",
+        json={"task_id": retried["task_id"], "lease_token": retried["lease_token"], "result": succeeded},
+        headers=runner_headers(runner),
+    ).status_code == 200
+    with factory() as db:
+        node = db.get(NodeRun, task.node_run_id)
+        assert node.status == NodeRunStatus.COMPLETED.value and node.attempt == 2
+        assert node.started_at == first_started_at and node.finished_at >= node.started_at
 
 
 def test_runner_artifact_result(client, memory_db, monkeypatch):

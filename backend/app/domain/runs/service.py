@@ -17,6 +17,7 @@ from app.domain.agents.model import Agent
 from app.domain.runners.models import Runner, RunnerStatus, runner_online
 from app.domain.runs.events import RunEventType, record_event
 from app.domain.runs.models import NodeRun, WorkflowRun
+from app.domain.runs.repository import count_runs as repository_count_runs
 from app.domain.runs.repository import get_run as repository_get_run
 from app.domain.runs.repository import list_node_runs as repository_list_node_runs
 from app.domain.runs.repository import list_runs as repository_list_runs
@@ -390,6 +391,10 @@ def list_runs(db: Session, *, workflow_id: str | None = None, status: WorkflowRu
         )
         for run in runs
     ]
+
+
+def count_runs(db: Session, *, workflow_id: str | None = None, status: WorkflowRunStatus | None = None) -> int:
+    return repository_count_runs(db, workflow_id=workflow_id, status=status)
 
 
 def get_run(db: Session, run_id: str) -> WorkflowRunRead:

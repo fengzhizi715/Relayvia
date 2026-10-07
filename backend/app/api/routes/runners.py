@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from tempfile import SpooledTemporaryFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -53,8 +53,17 @@ def _settings():
 
 
 @router.get("", response_model=list[RunnerRead])
-def get_runners(db: Session = Depends(get_db)) -> list[RunnerRead]:
-    runners = db.scalars(select(Runner).order_by(Runner.name)).all()
+def get_runners(
+    response: Response,
+    limit: int | None = Query(default=None, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> list[RunnerRead]:
+    response.headers["X-Total-Count"] = str(db.scalar(select(func.count()).select_from(Runner)) or 0)
+    query = select(Runner).order_by(Runner.name).offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    runners = db.scalars(query).all()
     offline_after = _settings().runner_offline_seconds
     return [RunnerRead(**to_read(runner, offline_after_seconds=offline_after)) for runner in runners]
 

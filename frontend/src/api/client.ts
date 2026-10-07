@@ -337,8 +337,8 @@ function apiUrl(path: string): string {
   return `${apiBaseUrl}${path}`;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(apiUrl(path), {
+async function send(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(apiUrl(path), {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -346,12 +346,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {}),
     },
   });
+}
+
+async function parse<T>(response: Response): Promise<T> {
   if (response.status === 204) return undefined as T;
   const body = (await response.json()) as T & { error?: { code: string; message: string; details?: Record<string, unknown> } };
   if (!response.ok) {
     throw new ApiError(body.error?.code ?? "REQUEST_FAILED", body.error?.message ?? "Request failed", body.error?.details);
   }
   return body;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  return parse<T>(await send(path, init));
+}
+
+export type PageParams = { limit?: number; offset?: number };
+
+export type Paginated<T> = { items: T[]; total: number };
+
+async function requestPaginated<T>(path: string): Promise<Paginated<T>> {
+  const response = await send(path);
+  const items = await parse<T[]>(response);
+  const header = response.headers.get("X-Total-Count");
+  const parsed = header === null ? Number.NaN : Number(header);
+  return { items, total: Number.isFinite(parsed) ? parsed : items.length };
 }
 
 export const getHealth = () => request<HealthResponse>("/api/health");
@@ -378,7 +397,12 @@ export const createAction = (serviceId: string, payload: ServiceActionPayload) =
 export const updateAction = (serviceId: string, actionId: string, payload: Partial<ServiceActionPayload>) => request<ServiceAction>(`/api/services/${serviceId}/actions/${actionId}`, { method: "PUT", body: JSON.stringify(payload) });
 export const deleteAction = (serviceId: string, actionId: string) => request<void>(`/api/services/${serviceId}/actions/${actionId}`, { method: "DELETE" });
 
-export const getWorkflows = (includeArchived = false) => request<Workflow[]>(`/api/workflows?include_archived=${includeArchived}`);
+export const getWorkflows = (includeArchived = false, page: PageParams = {}) => {
+  const query = new URLSearchParams({ include_archived: String(includeArchived) });
+  if (page.limit !== undefined) query.set("limit", String(page.limit));
+  if (page.offset !== undefined) query.set("offset", String(page.offset));
+  return requestPaginated<Workflow>(`/api/workflows?${query}`);
+};
 export const createWorkflow = (payload: WorkflowPayload) => request<Workflow>("/api/workflows", { method: "POST", body: JSON.stringify(payload) });
 export const getWorkflow = (id: string) => request<Workflow>(`/api/workflows/${id}`);
 export const updateWorkflow = (id: string, payload: Partial<WorkflowPayload> & { status?: WorkflowStatus }) => request<Workflow>(`/api/workflows/${id}`, { method: "PUT", body: JSON.stringify(payload) });
@@ -390,12 +414,14 @@ export const createWorkflowVersion = (id: string, changeNote?: string) => reques
 export const getWorkflowVersion = (id: string, version: number) => request<WorkflowVersion>(`/api/workflows/${id}/versions/${version}`);
 export const validateWorkflow = (id: string, graph?: WorkflowGraph) => request<ValidationResult>(`/api/workflows/${id}/validate`, { method: "POST", body: JSON.stringify(graph ? { graph } : {}) });
 
-export const getRuns = (params?: { workflowId?: string; status?: WorkflowRunStatus }) => {
+export const getRuns = (params?: { workflowId?: string; status?: WorkflowRunStatus } & PageParams) => {
   const query = new URLSearchParams();
   if (params?.workflowId) query.set("workflow_id", params.workflowId);
   if (params?.status) query.set("status", params.status);
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  if (params?.offset !== undefined) query.set("offset", String(params.offset));
   const qs = query.toString();
-  return request<WorkflowRunSummary[]>(`/api/workflow-runs${qs ? `?${qs}` : ""}`);
+  return requestPaginated<WorkflowRunSummary>(`/api/workflow-runs${qs ? `?${qs}` : ""}`);
 };
 export const createWorkflowRun = (workflowId: string, payload: WorkflowRunPayload) => request<WorkflowRun>(`/api/workflows/${workflowId}/runs`, { method: "POST", body: JSON.stringify(payload) });
 export const getWorkflowRun = (id: string) => request<WorkflowRun>(`/api/workflow-runs/${id}`);
@@ -489,7 +515,13 @@ export type Runner = {
   created_at: string;
   updated_at: string;
 };
-export const getRunners = () => request<Runner[]>("/api/runners");
+export const getRunners = (page: PageParams = {}) => {
+  const query = new URLSearchParams();
+  if (page.limit !== undefined) query.set("limit", String(page.limit));
+  if (page.offset !== undefined) query.set("offset", String(page.offset));
+  const qs = query.toString();
+  return requestPaginated<Runner>(`/api/runners${qs ? `?${qs}` : ""}`);
+};
 export const getRunner = (id: string) => request<Runner>(`/api/runners/${id}`);
 export const setRunnerEnabled = (id: string, enabled: boolean) => request<Runner>(`/api/runners/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) });
 export const revokeRunner = (id: string) => request<Runner>(`/api/runners/${id}/revoke`, { method: "POST" });
@@ -511,6 +543,13 @@ export type Workspace = {
   created_at: string;
   updated_at: string;
 };
-export const getWorkspaces = (runId?: string) => request<Workspace[]>(`/api/workspaces${runId ? `?run_id=${encodeURIComponent(runId)}` : ""}`);
+export const getWorkspaces = (runId?: string, page: PageParams = {}) => {
+  const query = new URLSearchParams();
+  if (runId) query.set("run_id", runId);
+  if (page.limit !== undefined) query.set("limit", String(page.limit));
+  if (page.offset !== undefined) query.set("offset", String(page.offset));
+  const qs = query.toString();
+  return requestPaginated<Workspace>(`/api/workspaces${qs ? `?${qs}` : ""}`);
+};
 export const releaseWorkspace = (id: string) => request<Workspace>(`/api/workspaces/${id}/release`, { method: "POST" });
 export const getRunExecutionTasks = (runId: string) => request<ExecutionTask[]>(`/api/workflow-runs/${runId}/execution-tasks`);

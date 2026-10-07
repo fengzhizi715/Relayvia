@@ -172,16 +172,8 @@ def heartbeat_runner(db: Session, runner_id: str, *, hostname: str, platform: st
     runner.metadata_json = metadata or {}
     runner.status = RunnerStatus.ONLINE.value
     runner.last_seen_at = utc_now()
-    # Renew leases of RUNNING tasks owned by this Runner so long executions
-    # stay owned while the Runner is alive.
-    db.execute(
-        update(ExecutionTask)
-        .where(
-            ExecutionTask.locked_by == runner_id,
-            ExecutionTask.status == ExecutionTaskStatus.RUNNING.value,
-        )
-        .values(lease_expires_at=utc_now() + timedelta(seconds=lease_seconds))
-    )
+    # Machine liveness must not renew abandoned task leases. Active tasks
+    # renew through their token-fenced task heartbeat, including submission.
     db.commit()
     db.refresh(runner)
     return runner
@@ -243,6 +235,9 @@ def runner_claim(db: Session, runner: Runner, *, lease_seconds: int) -> Executio
         if NodeRunStatus(node_run.status) is not NodeRunStatus.RUNNING:
             transition_node_run(NodeRunStatus(node_run.status), NodeRunStatus.RUNNING)
             node_run.status = NodeRunStatus.RUNNING.value
+        node_run.attempt = task.attempt
+        if node_run.started_at is None:
+            node_run.started_at = task.started_at
     payload = task.payload_json if isinstance(task.payload_json, dict) else {}
     workspace_ref = payload.get("workspace")
     if isinstance(workspace_ref, dict) and isinstance(workspace_ref.get("id"), str):
@@ -336,7 +331,20 @@ def runner_submit(
     storage: ArtifactStorage,
     max_bytes: int,
 ) -> bool:
-    task = db.scalar(select(ExecutionTask).where(ExecutionTask.id == task_id).with_for_update())
+    candidate = db.get(ExecutionTask, task_id)
+    if candidate is None:
+        return False
+    # Follow the same lock order as claim, cancellation and the Scheduler:
+    # WorkflowRun -> ExecutionTask -> NodeRun. Do not hold a Task lock while
+    # waiting for the parent Run during Event insertion / reconciliation.
+    run = db.scalar(select(WorkflowRun).where(WorkflowRun.id == candidate.workflow_run_id).with_for_update().execution_options(populate_existing=True))
+    if run is None or WorkflowRunStatus(run.status) in {
+        WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, WorkflowRunStatus.CANCELLED,
+    }:
+        return False
+    # The nonlocking candidate read may predate a cancellation. Refresh the
+    # identity-map object from this current, locking read before lease checks.
+    task = db.scalar(select(ExecutionTask).where(ExecutionTask.id == task_id).with_for_update().execution_options(populate_existing=True))
     if not _owns(task, runner_id, lease_token):
         return False
 

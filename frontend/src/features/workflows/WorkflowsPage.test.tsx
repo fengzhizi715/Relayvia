@@ -47,7 +47,7 @@ describe("WorkflowsPage", () => {
   afterEach(() => cleanup());
 
   it("creates a Workflow from the management page", async () => {
-    api.getWorkflows.mockResolvedValue([]);
+    api.getWorkflows.mockResolvedValue({ items: [], total: 0 });
     api.createWorkflow.mockResolvedValue(workflow);
     const user = userEvent.setup();
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -59,7 +59,7 @@ describe("WorkflowsPage", () => {
   });
 
   it("renames an existing Workflow", async () => {
-    api.getWorkflows.mockResolvedValue([workflow]);
+    api.getWorkflows.mockResolvedValue({ items: [workflow], total: 1 });
     api.getWorkflowGraph.mockResolvedValue({ workflow_id: workflow.id, schema_version: "1.0", graph, warnings: [], updated_at: workflow.updated_at });
     api.getWorkflowVersions.mockResolvedValue([]);
     api.updateWorkflow.mockResolvedValue({ ...workflow, name: "Renamed Workflow" });
@@ -76,7 +76,7 @@ describe("WorkflowsPage", () => {
   });
 
   it("loads a draft, saves it, creates a version, and makes history read only", async () => {
-    api.getWorkflows.mockResolvedValue([workflow]);
+    api.getWorkflows.mockResolvedValue({ items: [workflow], total: 1 });
     api.getWorkflowGraph.mockResolvedValue({ workflow_id: workflow.id, schema_version: "1.0", graph, warnings: [], updated_at: workflow.updated_at });
     api.getWorkflowVersions.mockResolvedValueOnce([]).mockResolvedValue([version]);
     api.updateWorkflowGraph.mockResolvedValue({ workflow_id: workflow.id, schema_version: "1.0", graph, warnings: [], updated_at: workflow.updated_at });

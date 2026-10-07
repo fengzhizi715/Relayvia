@@ -123,15 +123,27 @@ class RunnerClient:
         return response.json()
 
     async def submit(self, task_id: str, lease_token: str, result: dict) -> bool:
-        response = await self.client.post(
-            f"/api/runners/{self.id}/submit-result",
-            json={"task_id": task_id, "lease_token": lease_token, "result": result},
-            headers=self._headers(),
-        )
-        if response.status_code == 409:
-            return False  # lease expired / already processed -> drop
-        response.raise_for_status()
-        return True
+        # Reuse the completed result and uploaded Artifact refs. A transient
+        # database/network failure must not rerun the external Agent command.
+        for attempt in range(3):
+            try:
+                response = await self.client.post(
+                    f"/api/runners/{self.id}/submit-result",
+                    json={"task_id": task_id, "lease_token": lease_token, "result": result},
+                    headers=self._headers(),
+                )
+                if response.status_code == 409:
+                    return False  # lease expired / already processed -> drop
+                response.raise_for_status()
+                return True
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code < 500 or attempt == 2:
+                    raise
+            except httpx.TransportError:
+                if attempt == 2:
+                    raise
+            await asyncio.sleep(0.5 * (2**attempt))
+        raise AssertionError("unreachable")
 
     async def task_heartbeat(self, task_id: str, lease_token: str) -> bool:
         response = await self.client.post(
@@ -538,10 +550,11 @@ async def _run_claimed_task(client: RunnerClient, task: dict, renew_interval: fl
         for candidate in result.get("artifacts") or []:
             uploaded.append(await client.upload_artifact(task, candidate))
         result["artifacts"] = uploaded
+        # Keep the lease monitor alive until durable submission is accepted.
+        accepted = await client.submit(task["task_id"], task["lease_token"], result)
     finally:
         monitor.cancel()
         await asyncio.gather(monitor, return_exceptions=True)
-    accepted = await client.submit(task["task_id"], task["lease_token"], result)
     if not accepted:
         print(f"[runner] task {task['task_id']} stale; result dropped")
 

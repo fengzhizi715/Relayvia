@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -8,6 +8,7 @@ from app.domain.runs.schemas import NodeRunRead, WorkflowRunCreate, WorkflowRunR
 from app.domain.runs.service import (
     approve_node_run,
     cancel_run,
+    count_runs,
     create_run,
     get_node_run,
     get_run,
@@ -27,12 +28,14 @@ router = APIRouter(prefix="/workflow-runs", tags=["runs"])
 
 @router.get("", response_model=list[WorkflowRunSummary])
 def get_runs(
+    response: Response,
     workflow_id: str | None = Query(default=None),
     run_status: WorkflowRunStatus | None = Query(default=None, alias="status"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ) -> list[WorkflowRunSummary]:
+    response.headers["X-Total-Count"] = str(count_runs(db, workflow_id=workflow_id, status=run_status))
     return list_runs(db, workflow_id=workflow_id, status=run_status, limit=limit, offset=offset)
 
 

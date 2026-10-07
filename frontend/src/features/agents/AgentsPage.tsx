@@ -17,7 +17,7 @@ export function AgentsPage() {
   const queryClient = useQueryClient();
   const agents = useQuery({ queryKey: ["agents"], queryFn: getAgents });
   const credentials = useQuery({ queryKey: ["credentials"], queryFn: getCredentials });
-  const runners = useQuery({ queryKey: ["runners"], queryFn: getRunners });
+  const runners = useQuery({ queryKey: ["runners"], queryFn: () => getRunners() });
   const [selected, setSelected] = useState<Agent | null>(null);
   const [editing, setEditing] = useState<Agent | undefined>();
   const [showForm, setShowForm] = useState(false);
@@ -74,7 +74,7 @@ export function AgentsPage() {
           <div className="contract-grid"><div><span className="detail-label">{t("agents.capabilitiesLabel")}</span><pre>{JSON.stringify(selected.capabilities, null, 2)}</pre></div><div><span className="detail-label">{t("agents.inputSchema")}</span><pre>{JSON.stringify(selected.input_schema, null, 2)}</pre></div><div><span className="detail-label">{t("agents.outputSchema")}</span><pre>{JSON.stringify(selected.output_schema, null, 2)}</pre></div></div>
         </section> : <div className="select-state">{t("agents.selectState")}</div>}
       </div>}
-      {showForm && <AgentForm agent={editing} credentials={credentials.data ?? []} runners={runners.data ?? []} onClose={() => { setShowForm(false); setEditing(undefined); }} onSaved={refresh} />}
+      {showForm && <AgentForm agent={editing} credentials={credentials.data ?? []} runners={runners.data?.items ?? []} onClose={() => { setShowForm(false); setEditing(undefined); }} onSaved={refresh} />}
       {showDelete && <Modal title={t("agents.deleteTitle")} eyebrow={t("common.confirmAction")} onClose={() => setShowDelete(null)}><div className="confirm-copy"><p>{t("agents.deleteConfirm", { name: showDelete.name })}</p><p>{t("agents.deleteNote")}</p></div><div className="modal-actions"><button className="button" type="button" onClick={() => setShowDelete(null)}>{t("common.cancel")}</button><button className="button button--danger" type="button" disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate(showDelete.id)}>{t("agents.deleteAction")}</button></div></Modal>}
     </div>
   );

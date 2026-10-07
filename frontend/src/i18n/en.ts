@@ -30,6 +30,12 @@ export const en = {
   "common.connectionTestFailed": "Connection test failed",
   "common.saveChanges": "Save changes",
 
+  "pagination.label": "Pagination",
+  "pagination.previous": "Previous",
+  "pagination.next": "Next",
+  "pagination.pageOf": "Page {page} / {pages}",
+  "pagination.range": "{start}–{end} of {total}",
+
   "app.orchestrationPlatform": "ORCHESTRATION PLATFORM",
   "app.primaryNavigation": "Primary navigation",
   "app.runtimeReady": "Durable runtime ready",

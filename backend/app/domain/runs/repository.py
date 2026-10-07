@@ -1,6 +1,6 @@
 """Persistence access for WorkflowRun / NodeRun."""
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.domain.runs.models import NodeRun, WorkflowRun
@@ -26,6 +26,15 @@ def get_run(db: Session, run_id: str, *, lock: bool = False) -> WorkflowRun | No
     return db.scalar(query)
 
 
+def _run_filter_query(*, workflow_id: str | None = None, status: WorkflowRunStatus | None = None):
+    query = select(WorkflowRun)
+    if workflow_id:
+        query = query.where(WorkflowRun.workflow_id == workflow_id)
+    if status:
+        query = query.where(WorkflowRun.status == status.value)
+    return query
+
+
 def list_runs(
     db: Session,
     *,
@@ -34,13 +43,23 @@ def list_runs(
     limit: int = 50,
     offset: int = 0,
 ) -> list[WorkflowRun]:
-    query = select(WorkflowRun).order_by(WorkflowRun.created_at.desc())
+    query = _run_filter_query(workflow_id=workflow_id, status=status).order_by(WorkflowRun.created_at.desc())
+    query = query.limit(limit).offset(offset)
+    return list(db.scalars(query).all())
+
+
+def count_runs(
+    db: Session,
+    *,
+    workflow_id: str | None = None,
+    status: WorkflowRunStatus | None = None,
+) -> int:
+    query = select(func.count()).select_from(WorkflowRun)
     if workflow_id:
         query = query.where(WorkflowRun.workflow_id == workflow_id)
     if status:
         query = query.where(WorkflowRun.status == status.value)
-    query = query.limit(limit).offset(offset)
-    return list(db.scalars(query).all())
+    return int(db.scalar(query) or 0)
 
 
 def get_node_run(db: Session, run_id: str, node_run_id: str) -> NodeRun | None:

@@ -48,7 +48,7 @@ class CodexConnector(CodingAgentConnector):
 
     def build_command(self, *, task: str, timeout_seconds: int, executable: str | None = None) -> str:
         cli = executable or self.cli_name
-        return f"{shlex.quote(cli)} exec --json {shlex.quote(task)}"
+        return f"{shlex.quote(cli)} exec --json --sandbox workspace-write {shlex.quote(task)}"
 
 
 def detect_coding_agent_capabilities() -> list[str]:

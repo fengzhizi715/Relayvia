@@ -18,6 +18,7 @@ import {
 import { useAppStore } from "../../app/store/useAppStore";
 import { JsonEditor } from "../../components/JsonEditor";
 import { Modal } from "../../components/Modal";
+import { Pagination, usePageClamp } from "../../components/Pagination";
 import { ResourceEmptyState } from "../../components/ResourceEmptyState";
 import { StatusBadge } from "../../components/StatusBadge";
 import { useTranslation } from "../../i18n";
@@ -32,6 +33,8 @@ const emptyGraph: WorkflowGraph = {
   metadata: {},
 };
 
+const PAGE_SIZE = 20;
+
 function statusTone(status: Workflow["status"]): "success" | "warning" | "neutral" {
   return status === "active" ? "success" : status === "archived" ? "warning" : "neutral";
 }
@@ -39,7 +42,11 @@ function statusTone(status: Workflow["status"]): "success" | "warning" | "neutra
 export function WorkflowsPage() {
   const { t, tStatus, locale } = useTranslation();
   const queryClient = useQueryClient();
-  const workflows = useQuery({ queryKey: ["workflows"], queryFn: () => getWorkflows() });
+  const [page, setPage] = useState(0);
+  const workflows = useQuery({
+    queryKey: ["workflows", page],
+    queryFn: () => getWorkflows(false, { limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<WorkflowVersion | null>(null);
   const [graphText, setGraphText] = useState(JSON.stringify(emptyGraph, null, 2));
@@ -55,13 +62,17 @@ export function WorkflowsPage() {
   const setActiveSection = useAppStore((state) => state.setActiveSection);
   const setPendingRunId = useAppStore((state) => state.setPendingRunId);
 
-  const selected = workflows.data?.find((workflow) => workflow.id === selectedId) ?? null;
+  const selected = workflows.data?.items.find((workflow) => workflow.id === selectedId) ?? null;
   const graph = useQuery({ queryKey: ["workflow-graph", selectedId], queryFn: () => getWorkflowGraph(selectedId!), enabled: Boolean(selectedId) });
   const versions = useQuery({ queryKey: ["workflow-versions", selectedId], queryFn: () => getWorkflowVersions(selectedId!), enabled: Boolean(selectedId) });
 
   useEffect(() => {
     if (graph.data && !selectedVersion) setGraphText(JSON.stringify(graph.data.graph, null, 2));
   }, [graph.data, selectedVersion]);
+
+  const list = workflows.data?.items ?? [];
+  const total = workflows.data?.total;
+  usePageClamp(page, PAGE_SIZE, total, setPage);
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["workflows"] });
@@ -95,7 +106,7 @@ export function WorkflowsPage() {
   });
   const archiveMutation = useMutation({
     mutationFn: () => updateWorkflow(selectedId!, { status: "archived" }),
-    onSuccess: () => { setSelectedId(null); setSelectedVersion(null); setNotice(t("workflows.archived")); refresh(); },
+    onSuccess: () => { setSelectedId(null); setSelectedVersion(null); setPage(0); setNotice(t("workflows.archived")); refresh(); },
     onError: (value) => setError(value instanceof ApiError ? `${value.message} (${value.code})` : t("workflows.archiveFailed")),
   });
   const runMutation = useMutation({
@@ -169,14 +180,13 @@ export function WorkflowsPage() {
   if (workflows.isLoading) return <div className="loading-state">{t("workflows.loading")}</div>;
   if (workflows.isError) return <div className="inline-error">{t("workflows.loadError")}</div>;
   if (builder) return <WorkflowBuilderPage workflowId={builder.workflowId} version={builder.version} onBack={() => setBuilder(null)} />;
-  const list = workflows.data ?? [];
 
   return <div className="resource-page">
     <div className="page-toolbar"><div><p className="eyebrow">{t("workflows.eyebrow")}</p><h3>{t("workflows.title")}</h3><p className="page-description">{t("workflows.description")}</p></div><button className="button button--primary" type="button" onClick={openCreate}>{t("workflows.create")}</button></div>
     {notice && <button className="notice" type="button" onClick={() => setNotice(null)}>{notice} · {t("common.dismiss")}</button>}
     {error && <button className="notice notice--error" type="button" onClick={() => setError(null)}>{error} · {t("common.dismiss")}</button>}
     {list.length === 0 ? <ResourceEmptyState title={t("workflows.emptyTitle")} message={t("workflows.emptyMessage")} actionLabel={t("workflows.createAction")} onAction={openCreate} /> : <div className="resource-layout">
-      <div className="resource-list">{list.map((workflow) => <button className={selectedId === workflow.id ? "resource-row resource-row--selected" : "resource-row"} key={workflow.id} type="button" onClick={() => { setSelectedId(workflow.id); setSelectedVersion(null); setError(null); }}><span className="resource-row-main"><strong>{workflow.name}</strong><small>{workflow.current_version ? `v${workflow.current_version}` : t("workflows.draftOnly")} · {t("workflows.nodesCount", { count: workflow.draft_graph.nodes.length })}</small></span><span className="resource-row-meta"><StatusBadge label={tStatus(workflow.status)} tone={statusTone(workflow.status)} /></span></button>)}</div>
+      <div><div className="resource-list">{list.map((workflow) => <button className={selectedId === workflow.id ? "resource-row resource-row--selected" : "resource-row"} key={workflow.id} type="button" onClick={() => { setSelectedId(workflow.id); setSelectedVersion(null); setError(null); }}><span className="resource-row-main"><strong>{workflow.name}</strong><small>{workflow.current_version ? `v${workflow.current_version}` : t("workflows.draftOnly")} · {t("workflows.nodesCount", { count: workflow.draft_graph.nodes.length })}</small></span><span className="resource-row-meta"><StatusBadge label={tStatus(workflow.status)} tone={statusTone(workflow.status)} /></span></button>)}</div><Pagination page={page} pageSize={PAGE_SIZE} total={total ?? 0} onPageChange={setPage} disabled={workflows.isFetching} /></div>
       {selected ? <section className="detail-card workflow-detail"><div className="detail-header"><div><p className="eyebrow">{t("workflows.detailEyebrow")}</p><h3>{selected.name}</h3><p>{selected.description || t("common.noDescription")}</p></div><StatusBadge label={tStatus(selected.status)} tone={statusTone(selected.status)} /></div>
         <div className="detail-actions"><button className="button button--small button--primary" type="button" onClick={() => openBuilder(selected.id)}>{t("workflows.openBuilder")}</button>{selected.current_version ? <button className="button button--small" type="button" onClick={openRun}>{t("workflows.runVersion", { version: selected.current_version })}</button> : null}<button className="button button--small" type="button" onClick={openRename}>{t("workflows.rename")}</button><button className="button button--small button--danger" type="button" onClick={() => archiveMutation.mutate()} disabled={archiveMutation.isPending}>{archiveMutation.isPending ? t("workflows.archiving") : t("workflows.archive")}</button></div>
         <div className="detail-grid"><div><span className="detail-label">{t("workflows.schema")}</span><strong>{selected.graph_schema_version}</strong></div><div><span className="detail-label">{t("workflows.currentVersion")}</span><strong>{selected.current_version ? `v${selected.current_version}` : t("workflows.notPublished")}</strong></div><div><span className="detail-label">{t("workflows.draftNodes")}</span><strong>{selected.draft_graph.nodes.length}</strong></div><div><span className="detail-label">{t("workflows.draftEdges")}</span><strong>{selected.draft_graph.edges.length}</strong></div></div>

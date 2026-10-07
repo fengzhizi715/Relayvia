@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from threading import Barrier
 import os
 import time
 import uuid
@@ -24,6 +25,9 @@ from app.domain.execution.models import ExecutionTask
 from app.domain.execution.state_machine import EXECUTION_TASK_TERMINAL, ExecutionTaskStatus
 from app.domain.runs.models import NodeRun, WorkflowRun
 from app.domain.runs.service import cancel_run
+from app.domain.runners.service import runner_submit
+from app.core.errors import RelayviaError
+from app.infrastructure.artifact_storage.local import LocalArtifactStorage
 from app.domain.workflows.graph import empty_workflow_graph
 from app.domain.workflows.model import Workflow, WorkflowVersion
 from app.infrastructure.database.base import utc_now
@@ -32,6 +36,80 @@ from app.runtime.state_machine import NodeRunStatus, WorkflowRunStatus
 
 
 EMPTY_GRAPH = empty_workflow_graph().model_dump(mode="json")
+
+
+@pytest.mark.parametrize("iteration", range(3))
+def test_mysql_runner_result_submission_races_cancellation(mysql_engine, tmp_path, iteration):
+    """Independent connections must publish or cancel, without a lock cycle."""
+    factory = sessionmaker(bind=mysql_engine, autoflush=False, autocommit=False)
+    workflow_id = version_id = run_id = node_id = task_id = None
+    owner, lease = "mysql-test-runner", str(uuid.uuid4())
+    try:
+        with factory() as db:
+            workflow = Workflow(name=f"runner-race-{iteration}-{uuid.uuid4().hex[:12]}", status="active", draft_graph_json={}, current_version=1)
+            db.add(workflow)
+            db.flush()
+            version = WorkflowVersion(workflow_id=workflow.id, version=1, graph_schema_version="1.0", graph_json=EMPTY_GRAPH)
+            db.add(version)
+            db.flush()
+            run = WorkflowRun(workflow_id=workflow.id, workflow_version_id=version.id, version_number=1,
+                              status=WorkflowRunStatus.RUNNING.value, graph_schema_version="1.0",
+                              graph_snapshot_json=EMPTY_GRAPH, execution_snapshot_json={}, input_json={}, variables_json={})
+            db.add(run)
+            db.flush()
+            node = NodeRun(workflow_run_id=run.id, node_id="tool", node_type="tool", node_subtype="shell",
+                           node_name_snapshot="Tool", status=NodeRunStatus.RUNNING.value)
+            db.add(node)
+            db.flush()
+            task = ExecutionTask(workflow_run_id=run.id, node_run_id=node.id, status=ExecutionTaskStatus.RUNNING.value,
+                                 payload_json={"node_id": "tool"}, locked_by=owner, lease_token=lease,
+                                 lease_expires_at=utc_now() + timedelta(seconds=60), available_at=utc_now(),
+                                 execution_key=f"{run.id}:{node.id}")
+            db.add(task)
+            db.commit()
+            workflow_id, version_id, run_id, node_id, task_id = workflow.id, version.id, run.id, node.id, task.id
+        barrier = Barrier(2)
+
+        def publish():
+            with factory() as db:
+                barrier.wait(timeout=10)
+                return runner_submit(db, runner_id=owner, task_id=task_id, lease_token=lease,
+                                     result={"ok": True, "output": {"stdout": "finished"}},
+                                     storage=LocalArtifactStorage(tmp_path), max_bytes=1024)
+
+        def cancel():
+            with factory() as db:
+                barrier.wait(timeout=10)
+                try:
+                    cancel_run(db, run_id)
+                except RelayviaError as exc:
+                    assert exc.code == "RUN_ALREADY_TERMINAL"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            published = pool.submit(publish)
+            cancelled = pool.submit(cancel)
+            accepted = published.result(timeout=20)
+            cancelled.result(timeout=20)
+        with factory() as db:
+            run, node, task = db.get(WorkflowRun, run_id), db.get(NodeRun, node_id), db.get(ExecutionTask, task_id)
+            assert run.status in {WorkflowRunStatus.COMPLETED.value, WorkflowRunStatus.CANCELLED.value}
+            if accepted:
+                assert task.status == ExecutionTaskStatus.COMPLETED.value
+                assert node.status == NodeRunStatus.COMPLETED.value
+                assert node.output_json == {"stdout": "finished"}
+            else:
+                assert task.status == ExecutionTaskStatus.CANCELLED.value
+                assert node.status == NodeRunStatus.CANCELLED.value
+                assert node.output_json is None
+    finally:
+        if workflow_id:
+            with factory() as db:
+                db.query(ExecutionTask).filter(ExecutionTask.id == task_id).delete()
+                db.query(NodeRun).filter(NodeRun.id == node_id).delete()
+                db.query(WorkflowRun).filter(WorkflowRun.id == run_id).delete()
+                db.query(WorkflowVersion).filter(WorkflowVersion.id == version_id).delete()
+                db.query(Workflow).filter(Workflow.id == workflow_id).delete()
+                db.commit()
 
 
 MYSQL_TEST_URL = os.getenv("RELAYVIA_MYSQL_TEST_URL")

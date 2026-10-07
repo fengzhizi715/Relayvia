@@ -1,11 +1,16 @@
 """Workspace API: minimal read + release (creation is Runtime/Manager-driven)."""
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from app.domain.workspaces.models import Workspace, WorkspaceStatus
 from app.domain.workspaces.schemas import WorkspaceRead
-from app.domain.workspaces.service import get_workspace, list_workspaces, release_workspace
+from app.domain.workspaces.service import (
+    count_workspaces,
+    get_workspace,
+    list_workspaces,
+    release_workspace,
+)
 from app.infrastructure.database.session import get_db
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
@@ -31,8 +36,18 @@ def _to_read(workspace: Workspace) -> WorkspaceRead:
 
 
 @router.get("", response_model=list[WorkspaceRead])
-def get_workspaces(run_id: str | None = Query(default=None), db: Session = Depends(get_db)) -> list[WorkspaceRead]:
-    return [_to_read(workspace) for workspace in list_workspaces(db, run_id=run_id)]
+def get_workspaces(
+    response: Response,
+    run_id: str | None = Query(default=None),
+    limit: int | None = Query(default=None, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> list[WorkspaceRead]:
+    response.headers["X-Total-Count"] = str(count_workspaces(db, run_id=run_id))
+    return [
+        _to_read(workspace)
+        for workspace in list_workspaces(db, run_id=run_id, limit=limit, offset=offset)
+    ]
 
 
 @router.get("/{workspace_id}", response_model=WorkspaceRead)

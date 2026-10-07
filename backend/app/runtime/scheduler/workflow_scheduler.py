@@ -20,6 +20,7 @@ from app.domain.runs.repository import list_node_runs
 from app.domain.workflows.graph import WorkflowGraph, parse_workflow_graph
 from app.infrastructure.database.base import utc_now
 from app.runtime.context import ContextResolver, UnresolvedContextReference
+from app.runtime.executor.trace import sanitize_output
 from app.runtime.state_machine import (
     NodeRunStatus,
     WorkflowRunStatus,
@@ -165,16 +166,6 @@ class WorkflowScheduler:
             existing = db.scalar(select(ExecutionTask).where(ExecutionTask.node_run_id == node_run.id))
             if existing is not None:
                 continue
-            transition_node_run(NodeRunStatus(node_run.status), NodeRunStatus.QUEUED)
-            node_run.status = NodeRunStatus.QUEUED.value
-            record_event(
-                db,
-                workflow_run_id=run_id,
-                node_run_id=node_run.id,
-                event_type=RunEventType.NODE_QUEUED,
-                message=f"Node {node_id} queued",
-                payload={"node_id": node_id, "node_type": node.type.value},
-            )
             max_attempts, retry_backoff_seconds = _retry_settings_for_node(
                 run,
                 node.model_dump(mode="json"),
@@ -198,7 +189,6 @@ class WorkflowScheduler:
                 payload["execution_type"] = "shell"
                 required_capability = "shell"
                 target_runner_id = tool_config.pop("runner_id", None)
-                _attach_workspace(db, run_id, node_run, node_id, node, payload, runner_id=target_runner_id)
             elif node.type.value == "agent":
                 coding = _coding_agent_payload(run, node_runs, node)
                 if coding is not None:
@@ -206,7 +196,27 @@ class WorkflowScheduler:
                     payload["execution_type"] = "coding_agent"
                     required_capability = coding["capability"]
                     target_runner_id = coding["runner_id"]
-                    _attach_workspace(db, run_id, node_run, node_id, node, payload, runner_id=target_runner_id)
+
+            if required_capability is not None:
+                # Resolve Input alongside the dispatched config. Runner tasks
+                # bypass the Worker's execution-context/Trace persistence.
+                try:
+                    resolved_input = _context_resolver(run, node_runs).resolve(node.input_mapping)
+                except UnresolvedContextReference:
+                    continue
+                node_run.input_json = sanitize_output(resolved_input)
+                _attach_workspace(db, run_id, node_run, node_id, node, payload, runner_id=target_runner_id)
+
+            transition_node_run(NodeRunStatus(node_run.status), NodeRunStatus.QUEUED)
+            node_run.status = NodeRunStatus.QUEUED.value
+            record_event(
+                db,
+                workflow_run_id=run_id,
+                node_run_id=node_run.id,
+                event_type=RunEventType.NODE_QUEUED,
+                message=f"Node {node_id} queued",
+                payload={"node_id": node_id, "node_type": node.type.value},
+            )
 
             db.add(
                 ExecutionTask(
@@ -467,14 +477,18 @@ def _coding_agent_payload(run: WorkflowRun, node_runs: list[NodeRun], node) -> d
     return None
 
 
-def _resolve_agent_task(run: WorkflowRun, node_runs: list[NodeRun], node) -> dict | None:
+def _context_resolver(run: WorkflowRun, node_runs: list[NodeRun]) -> ContextResolver:
     completed = {node_run.node_id: node_run.output_json for node_run in node_runs if node_run.output_json is not None}
-    resolver = ContextResolver(
+    return ContextResolver(
         workflow_input=run.input_json,
         variables=run.variables_json,
         node_outputs=completed,
-        run={"id": run.id, "status": run.status},
+        run={"id": run.id, "status": run.status, "created_at": run.created_at.isoformat() if run.created_at else None},
     )
+
+
+def _resolve_agent_task(run: WorkflowRun, node_runs: list[NodeRun], node) -> dict | None:
+    resolver = _context_resolver(run, node_runs)
     try:
         resolved = resolver.resolve(node.config)
     except UnresolvedContextReference:
@@ -493,13 +507,7 @@ def _resolve_agent_task(run: WorkflowRun, node_runs: list[NodeRun], node) -> dic
 def _resolve_tool_config(run: WorkflowRun, node_runs: list[NodeRun], node) -> dict | None:
     """Resolve a Tool node's config into a Runner-executable payload. Returns
     None while an upstream dependency is not yet available (re-check later)."""
-    completed = {node_run.node_id: node_run.output_json for node_run in node_runs if node_run.output_json is not None}
-    resolver = ContextResolver(
-        workflow_input=run.input_json,
-        variables=run.variables_json,
-        node_outputs=completed,
-        run={"id": run.id, "status": run.status},
-    )
+    resolver = _context_resolver(run, node_runs)
     try:
         resolved = resolver.resolve(node.config)
     except UnresolvedContextReference:
